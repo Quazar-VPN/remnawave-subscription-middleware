@@ -10,6 +10,44 @@ header('X-Frame-Options: DENY');
 
 function h($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 
+// Форк Quazar: разбор позиции вставки доп. конфига из POST. Допустимые формы:
+// end | start | before:<remark> | after:<remark> (remark непустой). Иначе — end.
+function sqcfg_read_position($raw) {
+    $p = trim((string) $raw);
+    if ($p === '' || $p === 'end' || $p === 'start') return $p === '' ? 'end' : $p;
+    if (strpos($p, 'before:') === 0 && trim(substr($p, 7)) !== '') return $p;
+    if (strpos($p, 'after:') === 0 && trim(substr($p, 6)) !== '') return $p;
+    return 'end';
+}
+
+// Форк Quazar: собрать JSON-оверрайды из полей формы. JSON-поля (sockopt /
+// xhttpExtra / mux / finalMask) валидируются через json_decode; при неверном
+// JSON пишем сообщение в $err и не сохраняем. serverDescription — строка.
+// Возвращает json_encode массива (только непустые ключи) или '' если пусто.
+function sqcfg_read_overrides($post, &$err) {
+    $err = '';
+    $out = [];
+    $json_fields = [
+        'ov_sockopt'      => ['sockopt', 'sockopt'],
+        'ov_xhttp_extra'  => ['xhttpExtra', 'XHTTP extra'],
+        'ov_mux'          => ['mux', 'mux'],
+        'ov_final_mask'   => ['finalMask', 'finalMask'],
+    ];
+    foreach ($json_fields as $field => [$key, $label]) {
+        $s = trim((string) ($post[$field] ?? ''));
+        if ($s === '') continue;
+        $dec = json_decode($s, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $err = 'Неверный JSON в поле «' . $label . '»: ' . json_last_error_msg();
+            return '';
+        }
+        if (is_array($dec) && $dec) $out[$key] = $dec;
+    }
+    $sd = trim((string) ($post['ov_server_description'] ?? ''));
+    if ($sd !== '') $out['serverDescription'] = $sd;
+    return $out ? json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '';
+}
+
 if (!is_installed()) {
     $err = '';
     $ok  = false;
@@ -1015,6 +1053,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_auth()) {
         $grp   = trim($_POST['grp'] ?? '');
         $kind  = (($_POST['kind'] ?? 'simple') === 'wg') ? 'wg' : 'simple';
         $ret   = (($_POST['ret'] ?? '') === 'wg_pool') ? 'wg_pool' : 'squad_configs';
+        $position = sqcfg_read_position($_POST['position'] ?? 'end');
+        $xray_tpl = trim((string) ($_POST['xray_tpl'] ?? ''));
+        $ov_err = '';
+        $overrides = sqcfg_read_overrides($_POST, $ov_err);
+        if ($ov_err !== '') {
+            flash($ov_err);
+            header('Location: index.php?tab=' . $ret); exit();
+        }
         if (!$squads || $name === '' || trim($raw) === '') {
             flash('Выберите хотя бы один сквад, укажите метку и вставьте конфиг');
         } else {
@@ -1027,7 +1073,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_auth()) {
             } elseif ($kind === 'simple' && $isWg) {
                 flash('Это WG/AWG — добавляйте во вкладке «WG / AWG»');
             } else {
-                squadconf_add($squads, $parsed['type'], $name, $raw, json_encode($parsed, JSON_UNESCAPED_UNICODE), $grp);
+                squadconf_add($squads, $parsed['type'], $name, $raw, json_encode($parsed, JSON_UNESCAPED_UNICODE), $grp, $position, $xray_tpl, $overrides);
                 flash('Конфиг добавлен (' . squadconf_summary($parsed) . ')');
             }
         }
@@ -1089,6 +1135,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_auth()) {
         $raw    = (string) ($_POST['raw'] ?? '');
         $name   = trim($_POST['name'] ?? '');
         $grp    = trim($_POST['grp'] ?? '');
+        $ret    = (($_POST['ret'] ?? '') === 'wg_pool') ? 'wg_pool' : 'squad_configs';
+        $position = sqcfg_read_position($_POST['position'] ?? 'end');
+        $xray_tpl = trim((string) ($_POST['xray_tpl'] ?? ''));
+        $ov_err = '';
+        $overrides = sqcfg_read_overrides($_POST, $ov_err);
+        if ($ov_err !== '') {
+            flash($ov_err);
+            header('Location: index.php?tab=' . $ret); exit();
+        }
         if ($id <= 0 || !$squads || $name === '' || trim($raw) === '') {
             flash('Выберите хотя бы один сквад, укажите метку и конфиг');
         } else {
@@ -1096,11 +1151,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_auth()) {
             if (!$parsed['ok']) {
                 flash('Конфиг не распознан: ' . (implode(' ', $parsed['warnings']) ?: 'неизвестный формат'));
             } else {
-                squadconf_update($id, $squads, $parsed['type'], $name, $raw, json_encode($parsed, JSON_UNESCAPED_UNICODE), $grp);
+                squadconf_update($id, $squads, $parsed['type'], $name, $raw, json_encode($parsed, JSON_UNESCAPED_UNICODE), $grp, $position, $xray_tpl, $overrides);
                 flash('Конфиг обновлён (' . squadconf_summary($parsed) . ')');
             }
         }
-        header('Location: index.php?tab=' . ((($_POST['ret'] ?? '') === 'wg_pool') ? 'wg_pool' : 'squad_configs')); exit();
+        header('Location: index.php?tab=' . $ret); exit();
     }
 
     if ($action === 'del_squad_config') {
@@ -1449,6 +1504,7 @@ if ($tab === 'subst' && remnawave_url() !== '' && remnawave_token() !== '') {
 
 $sqcfg_squads = []; $sqcfg_squads_err = ''; $sqcfg_names = [];
 $sqcfg_simple = []; $sqcfg_wg = [];
+$sqcfg_hosts = []; $sqcfg_hosts_err = ''; $sqcfg_tpls = [];
 $sqcfg_modes = []; $sqcfg_stock = []; $sqcfg_free = []; $sqcfg_leases = []; $sqcfg_lease_by_cfg = []; $sqcfg_hwid_plat = []; $sqcfg_dupes = []; $sqcfg_reclaim_days = 14; $sqcfg_sizing = ['rows' => [], 'ts' => 0];
 if ($tab === 'squad_configs' || $tab === 'wg_pool') {
     if (remnawave_url() !== '' && remnawave_token() !== '') $sqcfg_squads = remnawave_internal_squads($sqcfg_squads_err);
@@ -1459,6 +1515,11 @@ if ($tab === 'squad_configs' || $tab === 'wg_pool') {
         else $sqcfg_simple[] = $c;
     }
     $sqcfg_leases = wglease_list();
+}
+if ($tab === 'squad_configs' && remnawave_url() !== '' && remnawave_token() !== '') {
+    $sqcfg_hosts = remnawave_hosts($sqcfg_hosts_err);
+    $e_tpl = '';
+    $sqcfg_tpls = array_values(array_filter(remnawave_sub_templates($e_tpl), fn($t) => ($t['type'] ?? '') === 'XRAY_JSON'));
 }
 if ($tab === 'wg_pool') {
     $sqcfg_reclaim_days = wglease_reclaim_days();

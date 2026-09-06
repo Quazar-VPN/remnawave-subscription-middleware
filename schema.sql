@@ -155,6 +155,30 @@ CREATE TABLE IF NOT EXISTS addsub_cache (
     ts INTEGER NOT NULL DEFAULT 0
 );
 
+-- Доп. конфиги, привязанные к внутренним сквадам (простые VLESS и WG/AWG).
+-- Создаётся в lib/squadconf.php (squadconf_ensure); здесь — справочно.
+-- squad_uuid — legacy-колонка (одиночный сквад), squads — JSON-список сквадов.
+-- Форк Quazar: position (end|start|before:<remark>|after:<remark>),
+-- xray_tpl (uuid шаблона xray-json или пусто = как глобальный) и overrides
+-- (JSON: sockopt / xhttpExtra / mux / finalMask / serverDescription).
+CREATE TABLE IF NOT EXISTS squad_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    squad_uuid TEXT NOT NULL,
+    squads TEXT NULL,
+    type TEXT NOT NULL DEFAULT 'amneziawg',
+    name TEXT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    raw TEXT NOT NULL,
+    parsed TEXT NULL,
+    grp TEXT NULL,
+    position TEXT NULL,
+    xray_tpl TEXT NULL,
+    overrides TEXT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_squad_cfg ON squad_configs(squad_uuid);
+
 -- Защищённый канал c1 (клиент ↔ прослойка).
 -- chan_kid — метки подписок на трое суток: вчера, сегодня, завтра.
 CREATE TABLE IF NOT EXISTS chan_kid (

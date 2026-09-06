@@ -535,11 +535,13 @@ function vless_to_xray($p, $tag) {
         if ($k) $stream['kcpSettings'] = $k;
     }
     if (!empty($p['fm']) && is_array($p['fm'])) $stream['finalmask'] = $p['fm'];
+    if (!empty($p['sockopt']) && is_array($p['sockopt'])) $stream['sockopt'] = $p['sockopt'];
     $o = [
         'protocol' => 'vless',
         'settings' => ['vnext' => [['address' => $p['host'], 'port' => (int) $p['port'], 'users' => [$user]]]],
         'streamSettings' => $stream,
     ];
     if ($tag !== '') $o['tag'] = $tag;
+    if (!empty($p['mux']) && is_array($p['mux'])) $o['mux'] = $p['mux'];
     return $o;
 }

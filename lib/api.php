@@ -243,6 +243,30 @@ function remnawave_external_squads(&$error = '') {
     return $out;
 }
 
+// Форк Quazar: список хостов панели для пиклиста «позиция вставки» доп. конфига.
+// Отдаём remark/viewPosition/isDisabled, отсортированные по viewPosition — это тот
+// же порядок, в котором панель рендерит узлы в теле подписки. Право токена: hosts:read.
+function remnawave_hosts(&$error = '') {
+    $error = '';
+    [$ok, $code, $data, $e] = remnawave_api_get('/api/hosts');
+    if (!$ok) { $error = $e ?: ('HTTP ' . $code); return []; }
+    $resp = $data['response'] ?? $data;
+    $list = is_array($resp) ? ($resp['hosts'] ?? $resp) : [];
+    if (!is_array($list)) { $error = 'Неожиданный ответ /api/hosts'; return []; }
+    $out = [];
+    foreach ($list as $h) {
+        if (!is_array($h) || empty($h['uuid'])) continue;
+        $out[] = [
+            'uuid'     => (string) $h['uuid'],
+            'remark'   => (string) ($h['remark'] ?? ''),
+            'pos'      => (int) ($h['viewPosition'] ?? 0),
+            'disabled' => !empty($h['isDisabled']),
+        ];
+    }
+    usort($out, fn($a, $b) => $a['pos'] <=> $b['pos']);
+    return $out;
+}
+
 function remnawave_sub_templates(&$error = '') {
     $error = '';
     [$ok, $code, $data, $e] = remnawave_api_get('/api/subscription-templates');
