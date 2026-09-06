@@ -256,11 +256,21 @@ function remnawave_hosts(&$error = '') {
     $out = [];
     foreach ($list as $h) {
         if (!is_array($h) || empty($h['uuid'])) continue;
+        $excl = [];
+        if (isset($h['excludedInternalSquads']) && is_array($h['excludedInternalSquads'])) {
+            foreach ($h['excludedInternalSquads'] as $s) {
+                // элемент может быть строкой-uuid или объектом {uuid,...}
+                if (is_string($s)) $excl[] = $s;
+                elseif (is_array($s) && !empty($s['uuid'])) $excl[] = (string) $s['uuid'];
+            }
+        }
         $out[] = [
             'uuid'     => (string) $h['uuid'],
             'remark'   => (string) ($h['remark'] ?? ''),
             'pos'      => (int) ($h['viewPosition'] ?? 0),
             'disabled' => !empty($h['isDisabled']),
+            'hidden'   => !empty($h['isHidden']),
+            'excluded' => $excl, // сквады, которым хост НЕ отдаётся
         ];
     }
     usort($out, fn($a, $b) => $a['pos'] <=> $b['pos']);
