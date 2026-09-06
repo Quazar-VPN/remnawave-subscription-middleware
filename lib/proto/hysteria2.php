@@ -34,7 +34,7 @@ function hysteria2_parse($raw) {
         'ok' => false, 'type' => 'hysteria2',
         'clients' => [], 'warnings' => [], 'notes' => [],
         'password' => '', 'host' => '', 'port' => 0,
-        'sni' => '', 'alpn' => [], 'allowInsecure' => false,
+        'sni' => '', 'alpn' => [], 'allowInsecure' => false, 'fp' => '',
         'obfs' => '', 'obfsPassword' => '', 'pinSHA256' => '', 'remark' => '',
     ];
     $raw = trim((string) $raw);
@@ -57,6 +57,7 @@ function hysteria2_parse($raw) {
     if ($alpn !== '') $res['alpn'] = array_values(array_filter(array_map('trim', explode(',', $alpn)), fn($x) => $x !== ''));
     $ins = strtolower($g('insecure', $g('allowInsecure', '')));
     $res['allowInsecure'] = ($ins === '1' || $ins === 'true');
+    $res['fp'] = $g('fp', $g('fingerprint', ''));
     $res['obfs'] = $g('obfs', '');
     $res['obfsPassword'] = $g('obfs-password', $g('obfs_password', ''));
     $res['pinSHA256'] = $g('pinSHA256', $g('pinsha256', ''));
@@ -121,11 +122,14 @@ function hysteria2_to_xray($p, $tag) {
     if (!empty($p['alpn'])) $tls['alpn'] = $p['alpn'];
     if (!empty($p['allowInsecure'])) $tls['allowInsecure'] = true;
     if (($p['pinSHA256'] ?? '') !== '') $tls['pinnedPeerCertSha256'] = (string) $p['pinSHA256'];
+    if (($p['fp'] ?? '') !== '') $tls['fingerprint'] = (string) $p['fp'];
+    // Форма как в реальном xray-json от панели (проверено): network "hysteria" +
+    // hysteriaSettings{version,auth}, TLS в tlsSettings.
     $stream = [
-        'method'          => 'hysteria',
-        'security'        => 'tls',
-        'tlsSettings'     => $tls,
-        'hysteriaSettings' => ['version' => 2, 'auth' => (string) $p['password'], 'udpIdleTimeout' => 60],
+        'network'          => 'hysteria',
+        'hysteriaSettings' => ['version' => 2, 'auth' => (string) $p['password']],
+        'security'         => 'tls',
+        'tlsSettings'      => $tls,
     ];
     // Salamander-обфускация (Hysteria2) → UDP-маска finalmask.
     if (strtolower((string) ($p['obfs'] ?? '')) === 'salamander' && ($p['obfsPassword'] ?? '') !== '') {
@@ -139,4 +143,31 @@ function hysteria2_to_xray($p, $tag) {
     ];
     if ($tag !== '') $o['tag'] = $tag;
     return $o;
+}
+
+// Реверс: xray-outbound (protocol "hysteria" v2) → hysteria2:// URI. Для импорта
+// из чужих xray-json подписок. Возвращает '' если это не hysteria2-аутбаунд.
+function hysteria2_from_xray($ob, $remark = '') {
+    if (!is_array($ob) || ($ob['protocol'] ?? '') !== 'hysteria') return '';
+    $st = $ob['settings'] ?? [];
+    if ((int) ($st['version'] ?? 0) !== 2) return ''; // hysteria v1 не поддерживаем
+    $host = (string) ($st['address'] ?? ''); $port = (int) ($st['port'] ?? 0);
+    $ss = $ob['streamSettings'] ?? [];
+    $auth = (string) ($ss['hysteriaSettings']['auth'] ?? '');
+    if ($host === '' || $port <= 0 || $auth === '') return '';
+    $tls = $ss['tlsSettings'] ?? [];
+    $q = [];
+    if (($tls['serverName'] ?? '') !== '') $q[] = 'sni=' . rawurlencode((string) $tls['serverName']);
+    if (!empty($tls['alpn']) && is_array($tls['alpn'])) $q[] = 'alpn=' . rawurlencode(implode(',', $tls['alpn']));
+    if (($tls['fingerprint'] ?? '') !== '') $q[] = 'fp=' . rawurlencode((string) $tls['fingerprint']);
+    if (!empty($tls['allowInsecure'])) $q[] = 'insecure=1';
+    if (isset($ss['finalmask']['type']) && $ss['finalmask']['type'] === 'salamander') {
+        $q[] = 'obfs=salamander';
+        $pw = (string) ($ss['finalmask']['settings']['password'] ?? '');
+        if ($pw !== '') $q[] = 'obfs-password=' . rawurlencode($pw);
+    }
+    $uri = 'hysteria2://' . rawurlencode($auth) . '@' . $host . ':' . $port;
+    if ($q) $uri .= '?' . implode('&', $q);
+    if ($remark !== '') $uri .= '#' . rawurlencode($remark);
+    return $uri;
 }

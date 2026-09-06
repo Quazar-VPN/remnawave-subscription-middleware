@@ -59,7 +59,40 @@ function squadconf_ensure() {
             try { $p->exec('ALTER TABLE squad_configs ADD COLUMN overrides ' . (db_driver() === 'mysql' ? 'MEDIUMTEXT' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
             set_setting('sqcfg_overrides_col', '1');
         }
+        // Форк Quazar (R2): привязка хоста к внешней подписке-источнику (импорт /
+        // ре-синк / дрифт). source_key = addr:port (ключ сопоставления с источником).
+        if (setting('sqcfg_source_col', '') !== '1') {
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN source_id ' . (db_driver() === 'mysql' ? 'INT UNSIGNED' : 'INTEGER') . ' NULL'); } catch (Throwable $e) {}
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN source_key ' . (db_driver() === 'mysql' ? 'VARCHAR(191)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
+            set_setting('sqcfg_source_col', '1');
+        }
     } catch (Throwable $e) { error_log('submw squadconf ensure: ' . $e->getMessage()); }
+}
+
+// Форк Quazar (R2): привязка/чтение источника для строки конфига.
+function squadconf_set_source($id, $source_id, $source_key) {
+    squadconf_ensure();
+    $id = (int) $id;
+    if (!($p = db()) || $id <= 0) return false;
+    try {
+        $st = $p->prepare('UPDATE squad_configs SET source_id = ?, source_key = ? WHERE id = ?');
+        return $st->execute([
+            ($source_id ? (int) $source_id : null),
+            (trim((string) $source_key) !== '' ? mb_substr((string) $source_key, 0, 191) : null),
+            $id,
+        ]);
+    } catch (Throwable $e) { error_log('submw squadconf set_source: ' . $e->getMessage()); return false; }
+}
+
+function squadconf_by_source($source_id) {
+    squadconf_ensure();
+    $source_id = (int) $source_id;
+    if (!($p = db()) || $source_id <= 0) return [];
+    try {
+        $st = $p->prepare('SELECT * FROM squad_configs WHERE source_id = ?');
+        $st->execute([$source_id]);
+        return $st->fetchAll();
+    } catch (Throwable $e) { return []; }
 }
 
 // -----------------------------------------------------------------------------
@@ -234,6 +267,18 @@ function squadconf_to_xray($pn, $tag) {
     if ($t === 'wireguard') return xray_wg_outbound($pn, $tag);
     $fn = $t . '_to_xray';
     return function_exists($fn) ? $fn($pn, $tag) : null;
+}
+
+// Реверс-диспетчер для импорта: xray-outbound → URI (vless/hysteria2/…). '' если
+// протокол не поддержан для извлечения. Использует <proto>_from_xray из lib/proto/*.
+function squadconf_node_from_xray($ob, $remark = '') {
+    if (!is_array($ob)) return '';
+    $proto = (string) ($ob['protocol'] ?? '');
+    // xray-имя протокола → наш тип/функция (hysteria = hysteria2).
+    $map = ['vless' => 'vless', 'trojan' => 'trojan', 'shadowsocks' => 'shadowsocks', 'hysteria' => 'hysteria2'];
+    if (!isset($map[$proto])) return '';
+    $fn = $map[$proto] . '_from_xray';
+    return function_exists($fn) ? (string) $fn($ob, $remark) : '';
 }
 
 function squadconf_squads_of($row) {

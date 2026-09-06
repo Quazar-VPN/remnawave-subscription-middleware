@@ -1172,6 +1172,47 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && is_auth()) {
         header('Location: index.php?tab=' . ((($_POST['ret'] ?? '') === 'squad_configs') ? 'squad_configs' : 'wg_pool')); exit();
     }
 
+    if ($action === 'extsub_add') {
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $url  = trim((string) ($_POST['url'] ?? ''));
+        $ua   = (string) ($_POST['ua'] ?? 'happ');
+        if ($name === '' || $url === '') {
+            flash('Укажите название и URL источника');
+        } elseif (extsub_add($name, $url, $ua)) {
+            flash('Источник добавлен');
+        } else {
+            flash('Не удалось добавить источник — проверьте URL (http/https)');
+        }
+        header('Location: index.php?tab=ext_import'); exit();
+    }
+
+    if ($action === 'extsub_del') {
+        extsub_delete((int) ($_POST['id'] ?? 0));
+        flash('Источник удалён, импортированные хосты отвязаны');
+        header('Location: index.php?tab=ext_import'); exit();
+    }
+
+    if ($action === 'extsub_import') {
+        $id     = (int) ($_POST['id'] ?? 0);
+        $keys   = array_values(array_filter(array_map('strval', (array) ($_POST['keys'] ?? [])), fn($s) => trim($s) !== ''));
+        $squads = array_values(array_filter(array_map('strval', (array) ($_POST['squads'] ?? [])), fn($s) => trim($s) !== ''));
+        $position = sqcfg_read_position($_POST['position'] ?? 'end');
+        $err = '';
+        $n = extsub_import($id, $keys, $squads, $position, $err);
+        if ($err !== '') flash($err);
+        else flash('Импортировано: ' . $n);
+        header('Location: index.php?tab=ext_import&src=' . $id . '&view=hosts'); exit();
+    }
+
+    if ($action === 'extsub_resync') {
+        $id  = (int) ($_POST['id'] ?? 0);
+        $err = '';
+        $n = extsub_resync($id, $err);
+        if ($err !== '') flash($err);
+        else flash('Синхронизировано: ' . $n);
+        header('Location: index.php?tab=ext_import&src=' . $id . '&view=drift'); exit();
+    }
+
     if ($action === 'pool_reset_leases') {
         $n = wglease_reset_auto();
         flash('Сброшено авто-выдач: ' . $n . '. Пул переразложится при следующем чтении подписок.');
@@ -1537,12 +1578,18 @@ if ($tab === 'wg_pool') {
     $sqcfg_dupes = wglease_dupes();
     $sqcfg_sizing = wglease_sizing_cached();
 }
+$extsub_list = []; $extsub_squads = [];
+if ($tab === 'ext_import') {
+    $extsub_list = extsub_all();
+    $es_err = '';
+    if (remnawave_url() !== '' && remnawave_token() !== '') $extsub_squads = remnawave_internal_squads($es_err);
+}
 $addsub_list = [];
 if ($tab === 'addsub') $addsub_list = addsub_map_all();
 $mirror        = mirror_domain();
 $wh_url        = ($mirror !== '' ? ('https://' . $mirror . '/webhook.php') : '/webhook.php');
 
-$tab_titles = ['users' => 'Пользователи', 'branding' => 'Брендинг', 'connection' => 'Подключение', 'webhooks' => 'Вебхуки', 'subst' => 'Грейс-сквад для истёкших', 'headers' => 'Заголовки приложений', 'rules' => 'Правила ответа по приложению', 'hwid' => 'HWID — заблокированные', 'overrides' => 'Оверрайды', 'reqlog' => 'Лог запросов', 'whlog' => 'Лог вебхуков', 'whlog_other' => 'Лог вебхуков', 'fwdlog' => 'Лог пересылки', 'grace_users' => 'Грейс-юзеры', 'sysinfo' => 'О системе', 'update' => 'Обновление', 'migrate' => 'База данных', 'chat' => 'Чат поддержки', 'squad_configs' => 'Доп. конфиги (простые)', 'wg_pool' => 'WG / AWG конфиги', 'addsub' => 'Слияние подписок', 'clod' => 'Защищённый канал (Clod Clash)'];
+$tab_titles = ['users' => 'Пользователи', 'branding' => 'Брендинг', 'connection' => 'Подключение', 'webhooks' => 'Вебхуки', 'subst' => 'Грейс-сквад для истёкших', 'headers' => 'Заголовки приложений', 'rules' => 'Правила ответа по приложению', 'hwid' => 'HWID — заблокированные', 'overrides' => 'Оверрайды', 'reqlog' => 'Лог запросов', 'whlog' => 'Лог вебхуков', 'whlog_other' => 'Лог вебхуков', 'fwdlog' => 'Лог пересылки', 'grace_users' => 'Грейс-юзеры', 'sysinfo' => 'О системе', 'update' => 'Обновление', 'migrate' => 'База данных', 'chat' => 'Чат поддержки', 'squad_configs' => 'Доп. конфиги (простые)', 'wg_pool' => 'WG / AWG конфиги', 'ext_import' => 'Импорт из подписок', 'addsub' => 'Слияние подписок', 'clod' => 'Защищённый канал (Clod Clash)'];
 $tab_title  = $tab_titles[$tab] ?? 'Админка';
 $bc_now = json_decode((string) setting('brand_cache', '{}'), true);
 if (!is_array($bc_now)) $bc_now = [];
@@ -1700,6 +1747,7 @@ $nav = [
     'overrides' => ['Оверрайды', '<path d="M3 4a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4" /> <path d="M15 16a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4" /> <path d="M21 11v-3a2 2 0 0 0 -2 -2h-6l3 3m0 -6l-3 3" /> <path d="M3 13v3a2 2 0 0 0 2 2h6l-3 -3m0 6l3 -3" />'],
     'squad_configs' => ['Доп. конфиги', '<path d="M11.35 22H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v5.35" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="M14 19h6" /> <path d="M17 16v6" />'],
     'wg_pool'   => ['WG / AWG', '<rect x="16" y="16" width="6" height="6" rx="1" /> <rect x="2" y="16" width="6" height="6" rx="1" /> <rect x="9" y="2" width="6" height="6" rx="1" /> <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" /> <path d="M12 12V8" />'],
+    'ext_import' => ['Импорт из подписок', '<path d="M12 3v12" /> <path d="m8 11 4 4 4-4" /> <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />'],
     'addsub'    => ['Слияние подписок', '<path d="M3 7h5l3.5 5h9.5" /> <path d="M3 17h5l3.495 -5" /> <path d="M18 15l3 -3l-3 -3" />'],
     'clod'      => ['Защищённый канал', '<circle cx="12" cy="16" r="1" /> <rect x="3" y="10" width="18" height="12" rx="2" /> <path d="M7 10V7a5 5 0 0 1 10 0v3" />'],
     'reqlog'    => ['Лог запросов', '<path d="M15 12h-5" /> <path d="M15 8h-5" /> <path d="M19 17V5a2 2 0 0 0-2-2H4" /> <path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3" />'],
@@ -1718,7 +1766,7 @@ $nav_sections = [
     ['l' => 'Настройки',        'coll' => true,  'k' => 'set',    'items' => ['connection', 'branding']],
     ['l' => 'Вебхуки',          'coll' => true,  'k' => 'wh',     'items' => forward_enabled() ? ['webhooks', 'fwdlog', 'whlog'] : ['webhooks', 'whlog']],
     ['l' => 'Грейс',            'coll' => true,  'k' => 'grace',  'items' => ['subst', 'grace_users']],
-    ['l' => 'Доступ / подмена', 'coll' => true,  'k' => 'access', 'items' => ['rules', 'hwid', 'overrides', 'squad_configs', 'wg_pool', 'addsub', 'clod']],
+    ['l' => 'Доступ / подмена', 'coll' => true,  'k' => 'access', 'items' => ['rules', 'hwid', 'overrides', 'squad_configs', 'wg_pool', 'ext_import', 'addsub', 'clod']],
     ['l' => 'Обслуживание',     'coll' => false, 'k' => 'maint',  'items' => ['sysinfo', 'update', 'migrate']],
 ];
 function submw_ui_cookie() {
@@ -1856,6 +1904,8 @@ window.addEventListener('pagehide',function(){lock=0;save();});})();</script>
     <?php include __DIR__ . '/inc/tab_squad_configs.php'; ?>
 <?php elseif ($tab === 'wg_pool'): ?>
     <?php include __DIR__ . '/inc/tab_wg_pool.php'; ?>
+<?php elseif ($tab === 'ext_import'): ?>
+    <?php include __DIR__ . '/inc/tab_ext_import.php'; ?>
 <?php elseif ($tab === 'addsub'): ?>
     <?php include __DIR__ . '/inc/tab_addsub.php'; ?>
 <?php elseif ($tab === 'clod'): ?>
