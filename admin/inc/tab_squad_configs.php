@@ -303,7 +303,7 @@
             <tr>
                 <td><?php foreach ($csquads as $sq): ?><span class="sq-tag"><?= h($sqcfg_names[$sq] ?? $sq) ?></span><?php endforeach; ?></td>
                 <td><span class="tag normal"><?= h($sumr) ?></span></td>
-                <td><?= $c['name'] !== null && $c['name'] !== '' ? h($c['name']) : '<span class="muted">—</span>' ?></td>
+                <td><?= $c['name'] !== null && $c['name'] !== '' ? h($c['name']) : '<span class="muted">—</span>' ?><?php if (!empty($c['source_id'])): ?> <span class="sq-tag">⛓ импорт</span><?php endif; ?></td>
                 <td>
                     <form method="post" style="margin:0;display:inline">
                         <input type="hidden" name="csrf" value="<?= h($token) ?>">

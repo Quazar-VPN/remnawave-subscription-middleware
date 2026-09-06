@@ -545,3 +545,78 @@ function vless_to_xray($p, $tag) {
     if (!empty($p['mux']) && is_array($p['mux'])) $o['mux'] = $p['mux'];
     return $o;
 }
+
+// Реверс: xray-outbound (protocol "vless") → vless:// URI. Для импорта из чужих
+// xray-json подписок. Зеркало vless_to_xray. '' если это не рабочий vless-аутбаунд.
+function vless_from_xray($ob, $remark = '') {
+    if (!is_array($ob) || ($ob['protocol'] ?? '') !== 'vless') return '';
+    $vnext = $ob['settings']['vnext'][0] ?? null;
+    if (!is_array($vnext)) return '';
+    $host = (string) ($vnext['address'] ?? ''); $port = (int) ($vnext['port'] ?? 0);
+    $user = $vnext['users'][0] ?? [];
+    $id = (string) ($user['id'] ?? '');
+    if ($host === '' || $port <= 0 || $id === '') return '';
+    $ss = $ob['streamSettings'] ?? [];
+    $net = (string) ($ss['network'] ?? 'tcp'); if ($net === '') $net = 'tcp';
+    $sec = (string) ($ss['security'] ?? 'none'); if ($sec === '') $sec = 'none';
+    $q = ['type=' . rawurlencode($net), 'security=' . rawurlencode($sec)];
+    $enc = (string) ($user['encryption'] ?? 'none'); if ($enc === '') $enc = 'none';
+    $q[] = 'encryption=' . rawurlencode($enc);
+    if (($user['flow'] ?? '') !== '') $q[] = 'flow=' . rawurlencode((string) $user['flow']);
+    if ($sec === 'reality') {
+        $r = $ss['realitySettings'] ?? [];
+        if (($r['serverName'] ?? '') !== '') $q[] = 'sni=' . rawurlencode((string) $r['serverName']);
+        if (($r['publicKey'] ?? '') !== '') $q[] = 'pbk=' . rawurlencode((string) $r['publicKey']);
+        if (($r['shortId'] ?? '') !== '') $q[] = 'sid=' . rawurlencode((string) $r['shortId']);
+        if (($r['spiderX'] ?? '') !== '') $q[] = 'spx=' . rawurlencode((string) $r['spiderX']);
+        if (($r['mldsa65Verify'] ?? '') !== '') $q[] = 'pqv=' . rawurlencode((string) $r['mldsa65Verify']);
+        if (($r['fingerprint'] ?? '') !== '') $q[] = 'fp=' . rawurlencode((string) $r['fingerprint']);
+    } elseif ($sec === 'tls') {
+        $t = $ss['tlsSettings'] ?? [];
+        if (($t['serverName'] ?? '') !== '') $q[] = 'sni=' . rawurlencode((string) $t['serverName']);
+        if (!empty($t['alpn']) && is_array($t['alpn'])) $q[] = 'alpn=' . rawurlencode(implode(',', $t['alpn']));
+        if (($t['fingerprint'] ?? '') !== '') $q[] = 'fp=' . rawurlencode((string) $t['fingerprint']);
+        if (($t['pinnedPeerCertSha256'] ?? '') !== '') $q[] = 'pcs=' . rawurlencode((string) $t['pinnedPeerCertSha256']);
+        if (($t['verifyPeerCertByName'] ?? '') !== '') $q[] = 'vcn=' . rawurlencode((string) $t['verifyPeerCertByName']);
+        if (!empty($t['allowInsecure'])) $q[] = 'allowInsecure=1';
+    }
+    if ($net === 'ws') {
+        $w = $ss['wsSettings'] ?? [];
+        if (($w['path'] ?? '') !== '') $q[] = 'path=' . rawurlencode((string) $w['path']);
+        if (($w['host'] ?? '') !== '') $q[] = 'host=' . rawurlencode((string) $w['host']);
+    } elseif ($net === 'grpc') {
+        $g = $ss['grpcSettings'] ?? [];
+        if (($g['serviceName'] ?? '') !== '') $q[] = 'serviceName=' . rawurlencode((string) $g['serviceName']);
+        if (!empty($g['multiMode'])) $q[] = 'mode=multi';
+    } elseif ($net === 'httpupgrade') {
+        $h = $ss['httpupgradeSettings'] ?? [];
+        if (($h['path'] ?? '') !== '') $q[] = 'path=' . rawurlencode((string) $h['path']);
+        if (($h['host'] ?? '') !== '') $q[] = 'host=' . rawurlencode((string) $h['host']);
+    } elseif ($net === 'xhttp') {
+        $x = $ss['xhttpSettings'] ?? [];
+        if (($x['path'] ?? '') !== '') $q[] = 'path=' . rawurlencode((string) $x['path']);
+        if (($x['host'] ?? '') !== '') $q[] = 'host=' . rawurlencode((string) $x['host']);
+        if (($x['mode'] ?? '') !== '') $q[] = 'mode=' . rawurlencode((string) $x['mode']);
+        if (!empty($x['extra']) && is_array($x['extra'])) $q[] = 'extra=' . rawurlencode(json_encode($x['extra'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    } elseif ($net === 'kcp') {
+        $k = $ss['kcpSettings'] ?? [];
+        if ((int) ($k['mtu'] ?? 0) > 0) $q[] = 'mtu=' . (int) $k['mtu'];
+        if ((int) ($k['tti'] ?? 0) > 0) $q[] = 'tti=' . (int) $k['tti'];
+    } elseif ($net === 'tcp') {
+        $hdr = $ss['rawSettings']['header'] ?? ($ss['tcpSettings']['header'] ?? null);
+        if (is_array($hdr) && ($hdr['type'] ?? '') === 'http') {
+            $q[] = 'headerType=http';
+            $req = $hdr['request'] ?? [];
+            $hh = $req['headers']['Host'][0] ?? '';
+            $pp = $req['path'][0] ?? '';
+            if ($hh !== '') $q[] = 'host=' . rawurlencode((string) $hh);
+            if ($pp !== '') $q[] = 'path=' . rawurlencode((string) $pp);
+        }
+    }
+    if (!empty($ss['finalmask']) && is_array($ss['finalmask'])) {
+        $q[] = 'fm=' . rawurlencode(json_encode($ss['finalmask'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    }
+    $uri = 'vless://' . rawurlencode($id) . '@' . $host . ':' . $port . '?' . implode('&', $q);
+    if ($remark !== '') $uri .= '#' . rawurlencode($remark);
+    return $uri;
+}
