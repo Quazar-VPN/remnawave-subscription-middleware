@@ -26,7 +26,7 @@
         <div class="sqcfg-grid" style="margin-top:1rem">
             <div>
                 <label for="<?= $idp ?>_position">Позиция в подписке</label>
-                <select id="<?= $idp ?>_position" name="position" class="sqcfg-sel"><?= $sqcfg_pos_options() ?></select>
+                <select id="<?= $idp ?>_position" name="position" class="sqcfg-sel sqcfg-pos"><?= $sqcfg_pos_options() ?></select>
                 <?php if ($sqcfg_hosts_err !== ''): ?>
                     <div class="muted" style="font-size:.76rem;margin-top:.35rem">Список хостов недоступен — проверьте токен. Доступны только «В начало» / «В конец».</div>
                 <?php elseif (!$sqcfg_hosts): ?>
@@ -374,7 +374,15 @@
     <?php include __DIR__ . '/_sqcfg_js.php'; ?>
     <script>
     window.SQCFG = <?= json_encode($sqcfg_edit ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    // Хосты панели для фильтра позиции по скваду (remark/excluded/disabled/hidden).
+    window.SQCFG_HOSTS = <?= json_encode(array_values(array_map(fn($h) => [
+        'remark'   => (string) ($h['remark'] ?? ''),
+        'excluded' => array_values($h['excluded'] ?? []),
+        'disabled' => !empty($h['disabled']),
+        'hidden'   => !empty($h['hidden']),
+    ], $sqcfg_hosts)), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     sqcfgInitEdit();
     sqcfgInitPager('sqcfgTbl', 'sqcfgPager', 'sqcfgSize', 'sqcfg_size');
     sqcfgInitManual(<?= json_encode($sqcfg_names, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT) ?>);
+    sqcfgInitPositions();
     </script>

@@ -186,7 +186,7 @@ function squadconf_proto_matrix() {
         'vless'       => ['base64', 'clash', 'singbox', 'xray'],
         'trojan'      => ['base64', 'clash', 'singbox', 'xray'],
         'shadowsocks' => ['base64', 'clash', 'singbox', 'xray'],
-        'hysteria2'   => ['base64', 'clash', 'singbox'],
+        'hysteria2'   => ['base64', 'clash', 'singbox', 'xray'],
         'tuic'        => ['base64', 'clash', 'singbox'],
         'wireguard'   => ['base64', 'clash', 'singbox', 'xray'],
         'amneziawg'   => ['base64', 'clash'],

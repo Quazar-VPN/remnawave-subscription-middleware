@@ -92,9 +92,12 @@
             document.getElementById('sqedit_raw').value = d.raw || '';
             var setV = function(id, val){ var el = document.getElementById(id); if (el) el.value = (val == null ? '' : val); };
             var posEl = document.getElementById('sqedit_position');
-            if (posEl) {
-                var pv = d.position || 'end';
-                var ok = false;
+            // Сначала чекбоксы сквадов выставлены (см. выше) — теперь пересобираем
+            // список позиций под выбранные сквады и восстанавливаем сохранённую.
+            if (posEl && window.sqcfgRebuildPos) {
+                window.sqcfgRebuildPos(posEl.closest('form'), d.position || 'end');
+            } else if (posEl) {
+                var pv = d.position || 'end', ok = false;
                 for (var i = 0; i < posEl.options.length; i++) { if (posEl.options[i].value === pv) { ok = true; break; } }
                 posEl.value = ok ? pv : 'end';
             }
@@ -108,6 +111,42 @@
         }
         document.querySelectorAll('.sqcfg-edit').forEach(function(b){ b.addEventListener('click',function(){ openEdit(b.dataset.id); }); });
         document.addEventListener('keydown',function(e){ if(e.key === 'Escape') sqEditClose(); });
+    };
+    // Форк Quazar: пересобрать список позиций (before/after <хост>) под выбранные
+    // сквады формы. Показываем только хосты, доступные ВСЕМ выбранным сквадам
+    // (хост исключён, если сквад в его excludedInternalSquads); disabled/hidden не
+    // показываем. Для «Ручной привязки» или без сквадов — все хосты.
+    window.sqcfgRebuildPos = function(scope, desired){
+        if(!scope) return;
+        var pos = scope.querySelector('.sqcfg-pos'); if(!pos) return;
+        var cur = (desired !== undefined && desired !== null) ? desired : pos.value;
+        var manual = false, squads = [];
+        scope.querySelectorAll('input[name="squads[]"]').forEach(function(cb){
+            if(cb.checked){ if(cb.value === '__manual__') manual = true; else squads.push(cb.value); }
+        });
+        var hosts = (window.SQCFG_HOSTS || []).filter(function(h){ return h && h.remark && !h.disabled && !h.hidden; });
+        if(!(manual || squads.length === 0)){
+            hosts = hosts.filter(function(h){
+                var ex = h.excluded || [];
+                return squads.every(function(sq){ return ex.indexOf(sq) === -1; });
+            });
+        }
+        while(pos.firstChild) pos.removeChild(pos.firstChild);
+        function opt(v,t){ var o = document.createElement('option'); o.value = v; o.textContent = t; pos.appendChild(o); }
+        opt('end','В конец (по умолчанию)'); opt('start','В начало');
+        hosts.forEach(function(h){ opt('before:'+h.remark,'перед '+h.remark); opt('after:'+h.remark,'после '+h.remark); });
+        var okv = false; for(var i=0;i<pos.options.length;i++){ if(pos.options[i].value === cur){ okv = true; break; } }
+        pos.value = okv ? cur : 'end';
+    };
+    window.sqcfgInitPositions = function(){
+        document.querySelectorAll('.sqcfg-pos').forEach(function(pos){
+            var scope = pos.closest('form'); if(!scope) return;
+            scope.querySelectorAll('input[name="squads[]"]').forEach(function(cb){
+                cb.addEventListener('change', function(){ window.sqcfgRebuildPos(scope); });
+            });
+            // Начальная сборка для формы добавления (модалка соберётся при открытии).
+            if(!pos.closest('#sqEditModal')) window.sqcfgRebuildPos(scope);
+        });
     };
     window.sqcfgInitPager = function(tblId, pagerId, sizeId, storeKey){
         var SIZES = [25, 50, 100, 200], size = 25, page = 1;

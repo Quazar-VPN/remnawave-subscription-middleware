@@ -2,19 +2,24 @@
 
 function hysteria2_core_ok($p, $core) {
     if (!is_array($p) || empty($p['ok'])) return false;
-    // Xray-core не умеет hysteria2 вовсе.
-    return in_array($core, ['clash', 'singbox'], true);
+    // Xray-core v26+ умеет hysteria2 (protocol: "hysteria", version 2).
+    return in_array($core, ['clash', 'singbox', 'xray'], true);
 }
 
 function hysteria2_clients($p) {
     $out = ['base64 (v2rayNG, Streisand, Happ)'];
     if (hysteria2_core_ok($p, 'clash')) $out[] = 'Mihomo / Clash.Meta';
     if (hysteria2_core_ok($p, 'singbox')) $out[] = 'sing-box (Hiddify и др.)';
+    if (hysteria2_core_ok($p, 'xray')) $out[] = 'Xray JSON (Happ, v2rayN)';
     return $out;
 }
 
 function hysteria2_core_notes($p) {
-    return ['Hysteria2 собирают только Clash.Meta и sing-box; в Xray JSON этого протокола нет — там конфиг не появится.'];
+    $out = ['Hysteria2 собирается для Clash.Meta, sing-box и Xray JSON (v26+ ядро). В base64 уходит как ссылка.'];
+    if (strtolower((string) ($p['obfs'] ?? '')) === 'salamander') {
+        $out[] = 'Salamander-обфускация в Xray JSON выводится как finalmask; проверьте, что версия ядра клиента её поддерживает.';
+    }
+    return $out;
 }
 
 function hysteria2_summary($p) {
@@ -108,7 +113,30 @@ function hysteria2_to_singbox($p, $tag) {
     return $o;
 }
 
-// Xray-core не поддерживает hysteria2.
+// Xray-core v26+: protocol "hysteria" c version 2. Схема — streamSettings.method
+// = "hysteria" + hysteriaSettings{version,auth}, TLS в tlsSettings.
 function hysteria2_to_xray($p, $tag) {
-    return null;
+    if (!hysteria2_core_ok($p, 'xray')) return null;
+    $tls = ['serverName' => (($p['sni'] ?? '') !== '' ? (string) $p['sni'] : (string) $p['host'])];
+    if (!empty($p['alpn'])) $tls['alpn'] = $p['alpn'];
+    if (!empty($p['allowInsecure'])) $tls['allowInsecure'] = true;
+    if (($p['pinSHA256'] ?? '') !== '') $tls['pinnedPeerCertSha256'] = (string) $p['pinSHA256'];
+    $stream = [
+        'method'          => 'hysteria',
+        'security'        => 'tls',
+        'tlsSettings'     => $tls,
+        'hysteriaSettings' => ['version' => 2, 'auth' => (string) $p['password'], 'udpIdleTimeout' => 60],
+    ];
+    // Salamander-обфускация (Hysteria2) → UDP-маска finalmask.
+    if (strtolower((string) ($p['obfs'] ?? '')) === 'salamander' && ($p['obfsPassword'] ?? '') !== '') {
+        $stream['finalmask'] = ['type' => 'salamander', 'settings' => ['password' => (string) $p['obfsPassword']]];
+    }
+    if (!empty($p['sockopt']) && is_array($p['sockopt'])) $stream['sockopt'] = $p['sockopt'];
+    $o = [
+        'protocol'       => 'hysteria',
+        'settings'       => ['version' => 2, 'address' => (string) $p['host'], 'port' => (int) $p['port']],
+        'streamSettings' => $stream,
+    ];
+    if ($tag !== '') $o['tag'] = $tag;
+    return $o;
 }
