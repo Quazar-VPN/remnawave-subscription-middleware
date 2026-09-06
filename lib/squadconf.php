@@ -44,7 +44,196 @@ function squadconf_ensure() {
             try { $p->exec('ALTER TABLE squad_configs ADD COLUMN grp ' . (db_driver() === 'mysql' ? 'VARCHAR(64)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
             set_setting('sqcfg_grp_col', '1');
         }
+        // Форк Quazar: позиция вставки хоста, per-host xray-json шаблон и JSON-оверрайды
+        // (sockopt / xhttpExtra / mux / finalMask / serverDescription). Аддитивны —
+        // старый образ их игнорирует, поэтому rollback безопасен.
+        if (setting('sqcfg_position_col', '') !== '1') {
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN position ' . (db_driver() === 'mysql' ? 'VARCHAR(191)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
+            set_setting('sqcfg_position_col', '1');
+        }
+        if (setting('sqcfg_xray_tpl_col', '') !== '1') {
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN xray_tpl ' . (db_driver() === 'mysql' ? 'VARCHAR(64)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
+            set_setting('sqcfg_xray_tpl_col', '1');
+        }
+        if (setting('sqcfg_overrides_col', '') !== '1') {
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN overrides ' . (db_driver() === 'mysql' ? 'MEDIUMTEXT' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
+            set_setting('sqcfg_overrides_col', '1');
+        }
     } catch (Throwable $e) { error_log('submw squadconf ensure: ' . $e->getMessage()); }
+}
+
+// -----------------------------------------------------------------------------
+// Форк Quazar: доступ к новым полям строки конфига + разбор позиции вставки.
+// -----------------------------------------------------------------------------
+
+// Позиция вставки: end (дефолт) | start | before:<remark> | after:<remark>.
+// Возвращает ['mode' => end|start|before|after, 'anchor' => <remark>].
+function squadconf_position_parse($pos) {
+    $pos = trim((string) $pos);
+    if ($pos === '' || $pos === 'end') return ['mode' => 'end', 'anchor' => ''];
+    if ($pos === 'start') return ['mode' => 'start', 'anchor' => ''];
+    if (strpos($pos, 'before:') === 0) return ['mode' => 'before', 'anchor' => trim(substr($pos, 7))];
+    if (strpos($pos, 'after:') === 0)  return ['mode' => 'after',  'anchor' => trim(substr($pos, 6))];
+    return ['mode' => 'end', 'anchor' => ''];
+}
+
+function squadconf_position_of($row) {
+    return squadconf_position_parse((string) ($row['position'] ?? ''));
+}
+
+function squadconf_tpl_of($row) {
+    return trim((string) ($row['xray_tpl'] ?? ''));
+}
+
+function squadconf_overrides_of($row) {
+    $s = (string) ($row['overrides'] ?? '');
+    if ($s === '') return [];
+    $a = json_decode($s, true);
+    return is_array($a) ? $a : [];
+}
+
+// Нормализация имени узла для сопоставления anchor'а и дедупа: срезаем ведущие
+// emoji-флаги и пробелы, приводим к нижнему регистру. Позволяет попасть в хост,
+// чей remark в теле подписки отрендерен с флагом-префиксом.
+function squadconf_name_norm($s) {
+    $s = trim((string) $s);
+    // убрать ведущие региональные индикаторы (флаги) и разделители
+    $s = preg_replace('/^(?:[\x{1F1E6}-\x{1F1FF}]{2}\s*)+/u', '', $s);
+    return mb_strtolower(trim($s));
+}
+
+// Слить админские оверрайды в структуру parsed перед сборкой узла. Emitter'ы
+// читают эти поля из parsed и выводят их (sockopt/mux — в xray; xhttpExtra/fm —
+// в xhttp/finalmask). serverDescription применяет инжектор на уровне элемента.
+function squadconf_apply_overrides($parsed, $ov) {
+    if (!is_array($parsed) || !is_array($ov) || !$ov) return $parsed;
+    if (isset($ov['xhttpExtra']) && is_array($ov['xhttpExtra']) && $ov['xhttpExtra']) $parsed['extra'] = $ov['xhttpExtra'];
+    if (isset($ov['finalMask']) && is_array($ov['finalMask']) && $ov['finalMask'])     $parsed['fm'] = $ov['finalMask'];
+    if (isset($ov['sockopt']) && is_array($ov['sockopt']) && $ov['sockopt'])           $parsed['sockopt'] = $ov['sockopt'];
+    if (isset($ov['mux']) && is_array($ov['mux']) && $ov['mux'])                        $parsed['mux'] = $ov['mux'];
+    $sd = trim((string) ($ov['serverDescription'] ?? ''));
+    if ($sd !== '') $parsed['serverDescription'] = $sd;
+    return $parsed;
+}
+
+// Планировщик порядка для форматов-списков (base64 / clash / xray-array).
+// Вход: имена существующих узлов В ПОРЯДКЕ ТЕЛА + кандидаты
+//   [{'name','pos'=>['mode','anchor'],'payload'}]. На выходе — финальная
+// последовательность слотов ['kind'=>existing|new,'orig'=>i|'payload'=>...].
+// Дедуп кандидатов делает вызывающий (skip до передачи сюда); здесь только порядок.
+function squadconf_plan_order(array $existing_names, array $candidates) {
+    $norm = array_map('squadconf_name_norm', $existing_names);
+    $n = count($existing_names);
+    $find = function ($anchor) use ($norm) {
+        $a = squadconf_name_norm($anchor);
+        if ($a === '') return -1;
+        foreach ($norm as $i => $x) if ($x === $a) return $i;                         // точное совпадение
+        foreach ($norm as $i => $x) if ($x !== '' && strpos($x, $a) !== false) return $i; // по подстроке (терпимо к флагам/суффиксам)
+        return -1;
+    };
+    $items = [];
+    foreach ($existing_names as $i => $nm) $items[] = ['key' => (float) $i, 'kind' => 'existing', 'orig' => $i];
+    $seq = 0;
+    foreach ($candidates as $c) {
+        $seq++;
+        $eps = $seq / 100000.0; // стабильный tie-break между кандидатами на одной позиции
+        $pos = $c['pos'] ?? ['mode' => 'end', 'anchor' => ''];
+        $mode = $pos['mode'] ?? 'end';
+        if ($mode === 'start') {
+            $key = -1.0 + $eps;
+        } elseif ($mode === 'before') {
+            $a = $find($pos['anchor'] ?? ''); $key = ($a >= 0 ? $a - 0.5 : $n) + $eps;
+        } elseif ($mode === 'after') {
+            $a = $find($pos['anchor'] ?? ''); $key = ($a >= 0 ? $a + 0.5 : $n) + $eps;
+        } else {
+            $key = (float) $n + $eps; // end
+        }
+        $items[] = ['key' => $key, 'kind' => 'new', 'payload' => $c['payload'], 'name' => $c['name']];
+    }
+    usort($items, fn($x, $y) => $x['key'] <=> $y['key']); // PHP 8 — стабильная сортировка
+    return $items;
+}
+
+// Общий шаг сборки кандидатов: разбор parsed, слияние оверрайдов, разрешение
+// имени с дедупом по УЖЕ присутствующим именам и между кандидатами. Возвращает
+// [{'c'=>row,'pn'=>parsed,'name'=>resolved}] только для НЕ-дублей нужных типов.
+function squadconf_candidates(array $configs, array $existing_names, array $types, $default_name_fn) {
+    $taken = array_map('squadconf_name_norm', $existing_names);
+    $taken = array_flip(array_filter($taken, fn($x) => $x !== ''));
+    $out = [];
+    foreach ($configs as $c) {
+        $pn = json_decode((string) ($c['parsed'] ?? ''), true);
+        if (!is_array($pn)) continue;
+        $t = $pn['type'] ?? '';
+        if ($types && !in_array($t, $types, true)) continue;
+        $pn = squadconf_apply_overrides($pn, squadconf_overrides_of($c));
+        $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : (string) $default_name_fn($t);
+        $key = squadconf_name_norm($nm);
+        if ($key === '' || isset($taken[$key])) continue; // п.4: имя уже есть у юзера → пропускаем
+        $taken[$key] = true;
+        $out[] = ['c' => $c, 'pn' => $pn, 'name' => $nm];
+    }
+    return $out;
+}
+
+// -----------------------------------------------------------------------------
+// Форк Quazar: матрица «протокол → ядра» и диспетчеры эмиттеров.
+// URI-протоколы (кроме wg/awg) собираются per-core функциями <type>_to_<core>()
+// из lib/proto/*.php и lib/vless.php. hy2/tuic в xray-core отсутствуют.
+// -----------------------------------------------------------------------------
+function squadconf_proto_matrix() {
+    return [
+        'vless'       => ['base64', 'clash', 'singbox', 'xray'],
+        'trojan'      => ['base64', 'clash', 'singbox', 'xray'],
+        'shadowsocks' => ['base64', 'clash', 'singbox', 'xray'],
+        'hysteria2'   => ['base64', 'clash', 'singbox'],
+        'tuic'        => ['base64', 'clash', 'singbox'],
+        'wireguard'   => ['base64', 'clash', 'singbox', 'xray'],
+        'amneziawg'   => ['base64', 'clash'],
+    ];
+}
+
+// URI-протоколы = всё, кроме wg/awg (у тех своя .conf-модель и эмиттеры awg_*).
+function squadconf_uri_protos() { return ['vless', 'trojan', 'shadowsocks', 'hysteria2', 'tuic']; }
+
+function squadconf_is_uri_proto($t) { return in_array((string) $t, squadconf_uri_protos(), true); }
+
+function squadconf_proto_core_ok($type, $core) {
+    $m = squadconf_proto_matrix();
+    return isset($m[$type]) && in_array($core, $m[$type], true);
+}
+
+function squadconf_default_name($t) {
+    switch ($t) {
+        case 'vless': return 'VLESS';
+        case 'trojan': return 'Trojan';
+        case 'shadowsocks': return 'Shadowsocks';
+        case 'hysteria2': return 'Hysteria2';
+        case 'tuic': return 'TUIC';
+        case 'wireguard': return 'WireGuard';
+        case 'amneziawg': return 'AmneziaWG';
+    }
+    return 'Config';
+}
+
+// Диспетчеры: wg/awg — спец. эмиттеры; остальные URI-протоколы по имени функции
+// <type>_to_<core>. function_exists — чтобы форк грузился до появления lib/proto/*.
+function squadconf_to_clash($pn, $name) {
+    $t = (string) ($pn['type'] ?? '');
+    if (in_array($t, ['wireguard', 'amneziawg'], true)) return awg_to_clash($pn, $name);
+    $fn = $t . '_to_clash';
+    return function_exists($fn) ? (string) $fn($pn, $name) : '';
+}
+function squadconf_to_singbox_node($pn, $tag) {
+    $t = (string) ($pn['type'] ?? '');
+    $fn = $t . '_to_singbox';
+    return function_exists($fn) ? $fn($pn, $tag) : null;
+}
+function squadconf_to_xray($pn, $tag) {
+    $t = (string) ($pn['type'] ?? '');
+    if ($t === 'wireguard') return xray_wg_outbound($pn, $tag);
+    $fn = $t . '_to_xray';
+    return function_exists($fn) ? $fn($pn, $tag) : null;
 }
 
 function squadconf_squads_of($row) {
@@ -94,14 +283,17 @@ function squadconf_for_squads(array $squad_uuids) {
     return $out;
 }
 
-function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '') {
+function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '', $position = 'end', $xray_tpl = '', $overrides = '') {
     squadconf_ensure();
     $squad_uuids = array_values(array_filter(array_unique(array_map('strval', (array) $squad_uuids)), fn($s) => trim($s) !== ''));
     $raw = (string) $raw;
     if (!($p = db()) || !$squad_uuids || trim($raw) === '') return false;
     $grp = trim((string) $grp);
+    $position = trim((string) $position);
+    $xray_tpl = trim((string) $xray_tpl);
+    $overrides = trim((string) $overrides);
     try {
-        $st = $p->prepare('INSERT INTO squad_configs (squad_uuid, squads, type, name, raw, parsed, grp) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $st = $p->prepare('INSERT INTO squad_configs (squad_uuid, squads, type, name, raw, parsed, grp, position, xray_tpl, overrides) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         return $st->execute([
             $squad_uuids[0],
             json_encode(array_values($squad_uuids), JSON_UNESCAPED_SLASHES),
@@ -110,6 +302,9 @@ function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '') {
             $raw,
             ($parsed !== '' ? (string) $parsed : null),
             ($grp !== '' ? mb_substr($grp, 0, 64) : null),
+            ($position !== '' ? mb_substr($position, 0, 191) : null),
+            ($xray_tpl !== '' ? mb_substr($xray_tpl, 0, 64) : null),
+            ($overrides !== '' ? $overrides : null),
         ]);
     } catch (Throwable $e) { error_log('submw squadconf add: ' . $e->getMessage()); return false; }
 }
@@ -144,37 +339,32 @@ function squadconf_toggle($id, $enabled) {
     catch (Throwable $e) { error_log('submw squadconf toggle: ' . $e->getMessage()); return false; }
 }
 
-function squadconf_update($id, $squad_uuids, $type, $name, $raw, $parsed, $grp = null) {
+// $grp/$position/$xray_tpl/$overrides === null → соответствующее поле НЕ трогаем
+// (для массовых правок параметров конфига, которые шлют только базовые поля).
+function squadconf_update($id, $squad_uuids, $type, $name, $raw, $parsed, $grp = null, $position = null, $xray_tpl = null, $overrides = null) {
     squadconf_ensure();
     $id = (int) $id;
     $squad_uuids = array_values(array_filter(array_unique(array_map('strval', (array) $squad_uuids)), fn($s) => trim($s) !== ''));
     $raw = (string) $raw;
     if (!($p = db()) || $id <= 0 || !$squad_uuids || trim($raw) === '') return false;
+    // Базовые поля есть всегда; опциональные добавляем в SET только когда переданы.
+    $cols = ['squad_uuid = ?', 'squads = ?', 'type = ?', 'name = ?', 'raw = ?', 'parsed = ?'];
+    $vals = [
+        $squad_uuids[0],
+        json_encode(array_values($squad_uuids), JSON_UNESCAPED_SLASHES),
+        mb_substr((string) $type, 0, 32),
+        ($name !== '' ? mb_substr((string) $name, 0, 191) : null),
+        $raw,
+        ($parsed !== '' ? (string) $parsed : null),
+    ];
+    if ($grp !== null)       { $g = trim((string) $grp);       $cols[] = 'grp = ?';       $vals[] = ($g !== '' ? mb_substr($g, 0, 64) : null); }
+    if ($position !== null)  { $ps = trim((string) $position); $cols[] = 'position = ?';  $vals[] = ($ps !== '' ? mb_substr($ps, 0, 191) : null); }
+    if ($xray_tpl !== null)  { $xt = trim((string) $xray_tpl); $cols[] = 'xray_tpl = ?';  $vals[] = ($xt !== '' ? mb_substr($xt, 0, 64) : null); }
+    if ($overrides !== null) { $ovr = trim((string) $overrides); $cols[] = 'overrides = ?'; $vals[] = ($ovr !== '' ? $ovr : null); }
+    $vals[] = $id;
     try {
-        if ($grp === null) {
-            $st = $p->prepare('UPDATE squad_configs SET squad_uuid = ?, squads = ?, type = ?, name = ?, raw = ?, parsed = ? WHERE id = ?');
-            return $st->execute([
-                $squad_uuids[0],
-                json_encode(array_values($squad_uuids), JSON_UNESCAPED_SLASHES),
-                mb_substr((string) $type, 0, 32),
-                ($name !== '' ? mb_substr((string) $name, 0, 191) : null),
-                $raw,
-                ($parsed !== '' ? (string) $parsed : null),
-                $id,
-            ]);
-        }
-        $g = trim((string) $grp);
-        $st = $p->prepare('UPDATE squad_configs SET squad_uuid = ?, squads = ?, type = ?, name = ?, raw = ?, parsed = ?, grp = ? WHERE id = ?');
-        return $st->execute([
-            $squad_uuids[0],
-            json_encode(array_values($squad_uuids), JSON_UNESCAPED_SLASHES),
-            mb_substr((string) $type, 0, 32),
-            ($name !== '' ? mb_substr((string) $name, 0, 191) : null),
-            $raw,
-            ($parsed !== '' ? (string) $parsed : null),
-            ($g !== '' ? mb_substr($g, 0, 64) : null),
-            $id,
-        ]);
+        $st = $p->prepare('UPDATE squad_configs SET ' . implode(', ', $cols) . ' WHERE id = ?');
+        return $st->execute($vals);
     } catch (Throwable $e) { error_log('submw squadconf update: ' . $e->getMessage()); return false; }
 }
 
@@ -425,22 +615,86 @@ function squadconf_inject_clash($body, array $configs) {
     $s = ltrim((string) $body);
     if ($s === '' || $s[0] === '{' || $s[0] === '[') return $body;
     if (!preg_match('~(^|\n)\s*(proxies|proxy-groups|proxy-providers|mixed-port|port|mode)\s*:~i', $s)) return $body;
-    $blocks = []; $names = [];
-    foreach ($configs as $c) {
-        $pn = json_decode((string) ($c['parsed'] ?? ''), true);
-        if (!is_array($pn)) continue;
-        $t = $pn['type'] ?? '';
-        if (!in_array($t, ['amneziawg', 'wireguard', 'vless'], true)) continue;
-        $def = $t === 'vless' ? 'VLESS' : ($t === 'wireguard' ? 'WireGuard' : 'AmneziaWG');
-        $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : $def;
-        $base = $nm; $i = 1;
-        while (in_array($nm, $names, true)) { $i++; $nm = $base . ' ' . $i; }
-        $blk = $t === 'vless' ? vless_to_clash($pn, $nm) : awg_to_clash($pn, $nm);
-        if ($blk === '') continue;
-        $blocks[] = $blk; $names[] = $nm;
+    [$exBlocks, $exNames] = addsub_clash_extract($body);
+    $types = array_merge(squadconf_uri_protos(), ['wireguard', 'amneziawg']);
+    $cands = squadconf_candidates($configs, $exNames, $types, 'squadconf_default_name');
+    $built = [];
+    foreach ($cands as $cd) {
+        $blk = squadconf_to_clash($cd['pn'], $cd['name']);
+        if ($blk === '') continue; // ядро не собирает этот транспорт — пропускаем формат
+        $built[] = ['name' => $cd['name'], 'pos' => squadconf_position_of($cd['c']), 'payload' => $blk];
     }
-    if (!$blocks) return $body;
-    return clash_insert_proxies($body, $blocks, $names);
+    if (!$built) return $body;
+    $items = squadconf_plan_order($exNames, $built);
+    $ordered = []; $newNames = [];
+    foreach ($items as $it) {
+        if ($it['kind'] === 'existing') { $ordered[] = $exBlocks[$it['orig']]; }
+        else { $ordered[] = $it['payload']; $newNames[] = $it['name']; }
+    }
+    return squadconf_clash_place($body, $ordered, $newNames);
+}
+
+// Заменяет секцию top-level `proxies:` телом из $ordered (существующие + новые
+// блоки в спланированном порядке) и дописывает $newNames в списки proxy-групп.
+// Существующие блоки берутся as-is (addsub_clash_extract), их формат сохраняется.
+function squadconf_clash_place($body, array $ordered, array $newNames) {
+    $nl = (strpos($body, "\r\n") !== false) ? "\r\n" : "\n";
+    $lines = preg_split('/\r\n|\r|\n/', (string) $body);
+    $out = [];
+    $done = false;              // top-level proxies уже перестроили
+    $skip_list = false;         // проходим старые элементы top-level списка (выкидываем)
+    $emit_ordered = function () use (&$out, $ordered) {
+        $out[] = 'proxies:';
+        foreach ($ordered as $blk) foreach (explode("\n", (string) $blk) as $bl) $out[] = $bl;
+    };
+    // Первый проход: перестроить top-level proxies.
+    foreach ($lines as $line) {
+        if ($skip_list) {
+            // элемент/продолжение списка (с отступом) — пропускаем; иначе список кончился
+            if ($line === '' || preg_match('/^\s+\S/', $line) || preg_match('/^\s*-\s/', $line)) continue;
+            $skip_list = false;
+        }
+        if (!$done && preg_match('/^proxies:\s*\[\s*\]\s*$/', $line)) { $emit_ordered(); $done = true; continue; }
+        if (!$done && preg_match('/^proxies:\s*$/', $line)) { $emit_ordered(); $done = true; $skip_list = true; continue; }
+        $out[] = $line;
+    }
+    if (!$done) { // top-level proxies не было — добавляем секцию в конец
+        if ($out && end($out) !== '') $out[] = '';
+        $emit_ordered();
+    }
+    $body2 = implode($nl, $out);
+    // Второй проход: дописать имена новых узлов в списки proxy-групп (порядок не важен).
+    if ($newNames) $body2 = squadconf_clash_add_group_members($body2, $newNames);
+    return $body2;
+}
+
+// Дописывает имена в каждый ВЛОЖЕННЫЙ `proxies:` (списки proxy-групп), не трогая
+// top-level proxies (он уже перестроен). Отступ берётся у существующих элементов.
+function squadconf_clash_add_group_members($body, array $names) {
+    $nl = (strpos($body, "\r\n") !== false) ? "\r\n" : "\n";
+    $lines = preg_split('/\r\n|\r|\n/', (string) $body);
+    $out = [];
+    $in_list = false; $item_indent = null; $key_indent = 0;
+    foreach ($lines as $line) {
+        if ($in_list) {
+            if (preg_match('/^(\s*)-\s/', $line, $mm) && strlen($mm[1]) >= $key_indent) {
+                if ($item_indent === null) $item_indent = $mm[1];
+                $out[] = $line; continue;
+            }
+            $ind = ($item_indent !== null) ? $item_indent : str_repeat(' ', $key_indent + 2);
+            foreach ($names as $n) $out[] = $ind . '- ' . yaml_q($n);
+            $in_list = false;
+        }
+        if (preg_match('/^(\s+)proxies:\s*$/', $line, $m)) { // только вложенные (с отступом)
+            $out[] = $line; $in_list = true; $item_indent = null; $key_indent = strlen($m[1]); continue;
+        }
+        $out[] = $line;
+    }
+    if ($in_list) {
+        $ind = ($item_indent !== null) ? $item_indent : str_repeat(' ', $key_indent + 2);
+        foreach ($names as $n) $out[] = $ind . '- ' . yaml_q($n);
+    }
+    return implode($nl, $out);
 }
 
 function squadconf_wgkey($v) { return str_replace('=', '%3D', (string) $v); }
@@ -558,6 +812,12 @@ function squadconf_ua_no_amnezia() { $f = squadconf_ua_flags(); return $f['no_aw
 
 function squadconf_ua_no_wg() { $f = squadconf_ua_flags(); return $f['no_wg']; }
 
+// Имя (remark) из URI-строки base64-подписки — часть после последнего '#'.
+function squadconf_uri_name($line) {
+    $h = strpos((string) $line, '#');
+    return $h === false ? '' : rawurldecode(substr((string) $line, $h + 1));
+}
+
 function squadconf_inject_base64($body, array $configs) {
     $decoded = base64_decode(trim((string) $body), true);
     if ($decoded === false || $decoded === '') return $body;
@@ -567,32 +827,34 @@ function squadconf_inject_base64($body, array $configs) {
     } else {
         $scheme = (strpos($decoded, 'wireguard://') !== false && strpos($decoded, 'wg://') === false) ? 'wireguard' : 'wg';
     }
-    $uris = []; $names = [];
-    foreach ($configs as $c) {
-        $pn = json_decode((string) ($c['parsed'] ?? ''), true);
-        if (!is_array($pn)) continue;
-        $t = $pn['type'] ?? '';
-        if ($t === 'vless') {
-            $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : 'VLESS';
-            $base = $nm; $i = 1;
-            while (in_array($nm, $names, true)) { $i++; $nm = $base . ' ' . $i; }
-            $u = vless_relabel_uri((string) $c['raw'], $nm);
-            if ($u !== '') { $uris[] = $u; $names[] = $nm; }
-            continue;
-        }
-        if ($scheme === 'wg') { if (!in_array($t, ['wireguard', 'amneziawg'], true)) continue; }
-        elseif ($t !== 'wireguard') continue;
-        $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : (($t === 'amneziawg') ? 'AmneziaWG' : 'WireGuard');
-        $base = $nm; $i = 1;
-        while (in_array($nm, $names, true)) { $i++; $nm = $base . ' ' . $i; }
-        $u = ($scheme === 'wg') ? wg_to_uri_wg($pn, $nm) : wg_to_uri($pn, $nm);
-        if ($u === '') continue;
-        $uris[] = $u; $names[] = $nm;
-    }
-    if (!$uris) return $body;
     $sep = (strpos($decoded, "\r\n") !== false) ? "\r\n" : "\n";
-    $decoded = rtrim($decoded, "\r\n") . $sep . implode($sep, $uris);
-    return base64_encode($decoded);
+    // Существующие узлы тела — непустые строки-ссылки, в исходном порядке.
+    $ex_lines = []; $ex_names = [];
+    foreach (preg_split('/\r\n|\r|\n/', $decoded) as $ln) {
+        $ln = rtrim($ln);
+        if ($ln === '' || strpos($ln, '://') === false) continue;
+        $ex_lines[] = $ln; $ex_names[] = squadconf_uri_name($ln);
+    }
+    $types = array_merge(squadconf_uri_protos(), ['wireguard', 'amneziawg']);
+    $cands = squadconf_candidates($configs, $ex_names, $types, 'squadconf_default_name');
+    $built = [];
+    foreach ($cands as $cd) {
+        $t = $cd['pn']['type'] ?? '';
+        if (squadconf_is_uri_proto($t)) {
+            $u = vless_relabel_uri((string) $cd['c']['raw'], $cd['name']); // relabel скорректирует #remark у любой схемы
+        } elseif (in_array($t, ['wireguard', 'amneziawg'], true)) {
+            if ($scheme === 'wg') { if (!in_array($t, ['wireguard', 'amneziawg'], true)) continue; }
+            elseif ($t !== 'wireguard') continue;
+            $u = ($scheme === 'wg') ? wg_to_uri_wg($cd['pn'], $cd['name']) : wg_to_uri($cd['pn'], $cd['name']);
+        } else { continue; }
+        if ($u === '') continue;
+        $built[] = ['name' => $cd['name'], 'pos' => squadconf_position_of($cd['c']), 'payload' => $u];
+    }
+    if (!$built) return $body;
+    $items = squadconf_plan_order($ex_names, $built);
+    $ordered = [];
+    foreach ($items as $it) $ordered[] = ($it['kind'] === 'existing') ? $ex_lines[$it['orig']] : $it['payload'];
+    return base64_encode(implode($sep, $ordered));
 }
 
 function squadconf_singbox_endpoint($parsed, $tag) {
@@ -635,33 +897,57 @@ function squadconf_inject_singbox($body, array $configs) {
     if (!squadconf_is_singbox(json_decode((string) $body, true))) return $body;
     $obj = json_decode((string) $body);
     if (!is_object($obj) || !isset($obj->outbounds) || !is_array($obj->outbounds)) return $body;
-    $existing = [];
-    foreach ($obj->outbounds as $o) if (is_object($o) && isset($o->tag)) $existing[] = (string) $o->tag;
+    // Все занятые теги (узлы + селекторы + endpoints) — для дедупа по имени.
+    $all_tags = [];
+    foreach ($obj->outbounds as $o) if (is_object($o) && isset($o->tag)) $all_tags[] = (string) $o->tag;
     if (isset($obj->endpoints) && is_array($obj->endpoints)) {
-        foreach ($obj->endpoints as $e) if (is_object($e) && isset($e->tag)) $existing[] = (string) $e->tag;
+        foreach ($obj->endpoints as $e) if (is_object($e) && isset($e->tag)) $all_tags[] = (string) $e->tag;
     }
-    $added = []; $names = [];
-    foreach ($configs as $c) {
-        $pn = json_decode((string) ($c['parsed'] ?? ''), true);
-        if (!is_array($pn)) continue;
-        $t = $pn['type'] ?? '';
-        if (!in_array($t, ['wireguard', 'vless'], true)) continue;
-        $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : ($t === 'vless' ? 'VLESS' : 'WireGuard');
-        $base = $nm; $i = 1;
-        while (in_array($nm, $names, true) || in_array($nm, $existing, true)) { $i++; $nm = $base . ' ' . $i; }
-        if ($t === 'vless') {
-            $ob = vless_to_singbox($pn, $nm);
-            if (!$ob) continue;
-            $obj->outbounds[] = $ob;
-        } else {
-            $ep = squadconf_singbox_endpoint($pn, $nm);
+    // Порядок узлов-аутбаундов (для anchor'а позиции) и индекс первого узла.
+    $node_names = []; $first_node = null;
+    foreach ($obj->outbounds as $idx => $o) {
+        if (addsub_singbox_is_node($o)) { if ($first_node === null) $first_node = $idx; $node_names[] = (string) ($o->tag ?? ''); }
+    }
+    $types = array_merge(squadconf_uri_protos(), ['wireguard']);
+    $cands = squadconf_candidates($configs, $all_tags, $types, 'squadconf_default_name');
+    $out_built = [];  // узлы-аутбаунды: ['name','pos','payload'=>object]
+    $added = [];
+    foreach ($cands as $cd) {
+        $t = $cd['pn']['type'] ?? '';
+        if ($t === 'wireguard') {
+            $ep = squadconf_singbox_endpoint($cd['pn'], $cd['name']);
             if (!$ep) continue;
             if (!isset($obj->endpoints) || !is_array($obj->endpoints)) $obj->endpoints = [];
-            $obj->endpoints[] = $ep;
+            $obj->endpoints[] = $ep;                 // wg-endpoints — отдельный массив, дописываем в конец
+            $added[] = $cd['name'];
+            continue;
         }
-        $added[] = $nm; $names[] = $nm;
+        $ob = squadconf_to_singbox_node($cd['pn'], $cd['name']);
+        if (!$ob) continue;                          // ядро не собирает этот транспорт
+        $out_built[] = ['name' => $cd['name'], 'pos' => squadconf_position_of($cd['c']), 'payload' => $ob];
+        $added[] = $cd['name'];
     }
     if (!$added) return $body;
+    // Вставка узлов-аутбаундов на спланированные позиции среди существующих узлов.
+    if ($out_built) {
+        $items = squadconf_plan_order($node_names, $out_built);
+        $node_seq = [];
+        $orig_nodes = [];
+        foreach ($obj->outbounds as $o) if (addsub_singbox_is_node($o)) $orig_nodes[] = $o;
+        foreach ($items as $it) $node_seq[] = ($it['kind'] === 'existing') ? $orig_nodes[$it['orig']] : $it['payload'];
+        // Пересобрать outbounds: не-узлы на местах, блок узлов — на позиции первого узла.
+        $rebuilt = []; $placed = false;
+        foreach ($obj->outbounds as $idx => $o) {
+            if (addsub_singbox_is_node($o)) {
+                if (!$placed) { foreach ($node_seq as $ns) $rebuilt[] = $ns; $placed = true; }
+                continue; // старые узлы выкидываем — они уже в node_seq
+            }
+            $rebuilt[] = $o;
+        }
+        if (!$placed) foreach ($node_seq as $ns) $rebuilt[] = $ns; // узлов не было — в конец
+        $obj->outbounds = $rebuilt;
+    }
+    // Добавить новые имена в селекторы/urltest.
     foreach ($obj->outbounds as $o) {
         if (is_object($o) && in_array(($o->type ?? ''), ['selector', 'urltest'], true) && isset($o->outbounds) && is_array($o->outbounds)) {
             foreach ($added as $nm) if (!in_array($nm, $o->outbounds, true)) $o->outbounds[] = $nm;
@@ -685,23 +971,57 @@ function squadconf_xray_tpl_cached() {
     return is_array($c) ? $c : [];
 }
 
-function squadconf_xray_tpl_fetch($name, &$error = '') {
+function squadconf_xray_tpl_is_uuid($k) {
+    return (bool) preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/', trim((string) $k));
+}
+
+// Принимает ИМЯ шаблона (глобальная настройка) ИЛИ его uuid (per-host выбор).
+function squadconf_xray_tpl_fetch($nameOrUuid, &$error = '') {
     $error = '';
     if (remnawave_url() === '' || remnawave_token() === '') {
         $error = 'Не заданы URL панели или API-токен';
         return null;
     }
     $e = '';
+    if (squadconf_xray_tpl_is_uuid($nameOrUuid)) {
+        $tpl = remnawave_sub_template_json(trim((string) $nameOrUuid), $e);
+        if (!is_array($tpl)) { $error = $e ?: 'Пустое тело шаблона'; return null; }
+        return $tpl;
+    }
     $list = remnawave_sub_templates($e);
     if ($e !== '') { $error = $e; return null; }
     $uuid = '';
     foreach ($list as $t) {
         if (strcasecmp((string) $t['type'], 'XRAY_JSON') !== 0) continue;
-        if (strcasecmp(trim((string) $t['name']), $name) === 0) { $uuid = $t['uuid']; break; }
+        if (strcasecmp(trim((string) $t['name']), (string) $nameOrUuid) === 0) { $uuid = $t['uuid']; break; }
     }
-    if ($uuid === '') { $error = 'Шаблон xray-json «' . $name . '» в панели не найден'; return null; }
+    if ($uuid === '') { $error = 'Шаблон xray-json «' . $nameOrUuid . '» в панели не найден'; return null; }
     $tpl = remnawave_sub_template_json($uuid, $e);
     if (!is_array($tpl)) { $error = $e ?: 'Пустое тело шаблона'; return null; }
+    return $tpl;
+}
+
+// Форк Quazar: per-host скелет xray-json по ключу (uuid шаблона из строки конфига).
+// Пустой ключ → глобальный шаблон (squadconf_xray_tpl). Кэш — свой слот на ключ,
+// с тем же TTL и кэшированием отрицательного результата, что у глобального.
+function squadconf_xray_tpl_by($key, $maxAge = null, &$error = '') {
+    $error = '';
+    $key = trim((string) $key);
+    if ($key === '') return squadconf_xray_tpl($maxAge, $error);
+    if ($maxAge === null) $maxAge = squadconf_xray_tpl_ttl();
+    $slot = 'sqcfg_xtpl_' . md5($key);
+    $now = time();
+    $c = json_decode((string) setting($slot, ''), true);
+    if (is_array($c) && ($c['key'] ?? '') === $key && (int) ($c['ts'] ?? 0) > 0 && ($now - (int) $c['ts']) <= $maxAge) {
+        $error = (string) ($c['err'] ?? '');
+        $tpl = $c['tpl'] ?? null;
+        return (is_array($tpl) && $tpl) ? $tpl : null;
+    }
+    $tpl = squadconf_xray_tpl_fetch($key, $error);
+    set_setting($slot, json_encode(
+        ['key' => $key, 'ts' => $now, 'err' => $error, 'tpl' => $tpl],
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+    ));
     return $tpl;
 }
 
@@ -761,16 +1081,24 @@ function squadconf_supported_types($body, $format) {
     $f = squadconf_ua_flags();
     $wg_ok = empty($f['no_wg']);
     $awg_ok = empty($f['no_awg']);
-    $t = ['vless'];
+    // Определяем целевое ядро, чтобы отобрать URI-протоколы по матрице.
+    if ($format === 'clash') {
+        $core = 'clash';
+    } else {
+        $trim = ltrim((string) $body);
+        $is_json = !($trim === '' || ($trim[0] !== '[' && $trim[0] !== '{'));
+        if (!$is_json) $core = 'base64';
+        else $core = squadconf_is_singbox(json_decode((string) $body, true)) ? 'singbox' : 'xray';
+    }
+    $t = [];
+    foreach (squadconf_uri_protos() as $p) if (squadconf_proto_core_ok($p, $core)) $t[] = $p;
     if ($format === 'clash') {
         if ($wg_ok) $t[] = 'wireguard';
         if ($awg_ok) $t[] = 'amneziawg';
         return $t;
     }
-    $trim = ltrim((string) $body);
-    $is_json = !($trim === '' || ($trim[0] !== '[' && $trim[0] !== '{'));
     if ($wg_ok) $t[] = 'wireguard';
-    if (!$is_json && $awg_ok) {
+    if ($core === 'base64' && $awg_ok) {
         // AmneziaWG уходит клиенту только когда отдаётся схема wg:// (она несёт оба типа).
         // Если панель вернула wireguard:// без wg://, клиент получит только wireguard,
         // поэтому амнезию не бронируем — иначе адрес пула занимается впустую.
@@ -832,8 +1160,7 @@ function xray_wg_outbound($parsed, $tag) {
 }
 
 function xray_outbound_any($pn, $tag) {
-    if (is_array($pn) && ($pn['type'] ?? '') === 'vless') return vless_to_xray($pn, $tag);
-    return xray_wg_outbound($pn, $tag);
+    return squadconf_to_xray($pn, $tag); // vless/trojan/ss/… + wireguard через диспетчер
 }
 
 function xray_tpl_make_single($el, $proxy) {
@@ -863,40 +1190,54 @@ function xray_tpl_make_single($el, $proxy) {
 function squadconf_inject_xray_json($body, array $configs) {
     $obj = json_decode((string) $body);
     if (!is_array($obj) && !is_object($obj)) return $body;
-
-    $items = []; $names = [];
-    foreach ($configs as $c) {
-        $pn = json_decode((string) ($c['parsed'] ?? ''), true);
-        if (!is_array($pn) || !in_array($pn['type'] ?? '', ['wireguard', 'vless'], true)) continue;
-        $nm = ($c['name'] !== null && trim((string) $c['name']) !== '') ? trim((string) $c['name']) : (($pn['type'] ?? '') === 'vless' ? 'VLESS' : 'WireGuard');
-        $base = $nm; $i = 1;
-        while (in_array($nm, $names, true)) { $i++; $nm = $base . ' ' . $i; }
-        $items[] = ['pn' => $pn, 'name' => $nm]; $names[] = $nm;
-    }
-    if (!$items) return $body;
+    $types = array_merge(squadconf_uri_protos(), ['wireguard']);
 
     if (is_array($obj)) {
+        // Массив конфигов (Happ). Каждый элемент — самостоятельный конфиг с remarks.
         foreach ($obj as $el) {
             if (!is_object($el) || !isset($el->outbounds) || !is_array($el->outbounds)) return $body;
         }
-        $tpl = null;
-        $def = squadconf_xray_tpl();
-        if (is_array($def) && $def) $tpl = json_decode(json_encode($def));
-        if (!is_object($tpl)) {
-            foreach ($obj as $el) { if (is_object($el) && isset($el->outbounds) && is_array($el->outbounds)) { $tpl = $el; break; } }
+        $ex_names = [];
+        foreach ($obj as $el) $ex_names[] = (string) ($el->remarks ?? '');
+        $cands = squadconf_candidates($configs, $ex_names, $types, 'squadconf_default_name');
+        // Фолбэк-шаблон (глобальный) — если у строки конфига свой шаблон не задан/не получен.
+        $global_tpl = null;
+        $gdef = squadconf_xray_tpl();
+        if (is_array($gdef) && $gdef) $global_tpl = json_decode(json_encode($gdef));
+        if (!is_object($global_tpl)) {
+            foreach ($obj as $el) { if (is_object($el) && isset($el->outbounds) && is_array($el->outbounds)) { $global_tpl = $el; break; } }
         }
-        if (!is_object($tpl)) return $body;
-        foreach ($items as $it) {
-            $wg = xray_outbound_any($it['pn'], 'proxy');
-            if (!$wg) continue;
+        $built = [];
+        foreach ($cands as $cd) {
+            $ob = xray_outbound_any($cd['pn'], 'proxy');
+            if (!$ob) continue; // hy2/tuic и т.п. — xray их не собирает, пропускаем
+            // per-host шаблон (п.5): uuid из строки конфига переопределяет глобальный.
+            $tpl = null;
+            $tk = squadconf_tpl_of($cd['c']);
+            if ($tk !== '') { $t = squadconf_xray_tpl_by($tk); if (is_array($t) && $t) $tpl = json_decode(json_encode($t)); }
+            if (!is_object($tpl)) $tpl = $global_tpl;
+            if (!is_object($tpl)) continue;
             $el = json_decode(json_encode($tpl));
-            xray_tpl_make_single($el, $wg);
-            $el->remarks = $it['name'];
-            $obj[] = $el;
+            xray_tpl_make_single($el, $ob);
+            $el->remarks = $cd['name'];
+            $sd = trim((string) ($cd['pn']['serverDescription'] ?? ''));
+            if ($sd !== '') $el->meta = (object) ['serverDescription' => $sd]; // п.3: Happ serverDescription
+            $built[] = ['name' => $cd['name'], 'pos' => squadconf_position_of($cd['c']), 'payload' => $el];
         }
+        if (!$built) return $body;
+        $items = squadconf_plan_order($ex_names, $built);
+        $seqOut = [];
+        foreach ($items as $it) $seqOut[] = ($it['kind'] === 'existing') ? $obj[$it['orig']] : $it['payload'];
+        $obj = $seqOut;
     } else {
+        // Одиночный конфиг: дедуп по tag, дописываем аутбаунды в конец.
         if (!isset($obj->outbounds) || !is_array($obj->outbounds)) return $body;
-        foreach ($items as $it) { $wg = xray_outbound_any($it['pn'], ''); if ($wg) $obj->outbounds[] = $wg; }
+        $tags = [];
+        foreach ($obj->outbounds as $o) if (is_object($o) && isset($o->tag)) $tags[] = (string) $o->tag;
+        $cands = squadconf_candidates($configs, $tags, $types, 'squadconf_default_name');
+        $any = false;
+        foreach ($cands as $cd) { $ob = xray_outbound_any($cd['pn'], $cd['name']); if ($ob) { $obj->outbounds[] = $ob; $any = true; } }
+        if (!$any) return $body;
     }
     $enc = json_encode($obj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     return $enc === false ? $body : $enc;
@@ -955,13 +1296,42 @@ function clash_insert_proxies($body, array $blocks, array $names) {
     return implode($nl, $out);
 }
 
+// Диспетчер парсеров по схеме ссылки. URI-протоколы (кроме vless) разбираются
+// парсерами <scheme>_parse() из lib/proto/*.php; при их отсутствии — awg-фолбэк.
+function squadconf_uri_scheme_map() {
+    return [
+        'vless://'     => 'vless',
+        'trojan://'    => 'trojan',
+        'ss://'        => 'shadowsocks',
+        'hysteria2://' => 'hysteria2',
+        'hy2://'       => 'hysteria2',
+        'tuic://'      => 'tuic',
+    ];
+}
+
 function squadconf_parse_any($raw) {
     $raw = (string) $raw;
-    if (stripos(ltrim($raw), 'vless://') === 0) return vless_parse($raw);
+    $l = ltrim($raw);
+    foreach (squadconf_uri_scheme_map() as $scheme => $type) {
+        if (stripos($l, $scheme) === 0) {
+            if ($type === 'vless') return vless_parse($raw);
+            $fn = $type . '_parse';
+            if (function_exists($fn)) return $fn($raw);
+            return ['ok' => false, 'type' => $type, 'warnings' => ['Парсер протокола ' . $type . ' недоступен.'], 'notes' => [], 'clients' => []];
+        }
+    }
     return awg_parse_conf($raw);
 }
 
 function squadconf_summary($parsed) {
-    if (is_array($parsed) && ($parsed['type'] ?? '') === 'vless') return vless_summary($parsed);
+    if (is_array($parsed)) {
+        $t = $parsed['type'] ?? '';
+        if ($t === 'vless') return vless_summary($parsed);
+        if (squadconf_is_uri_proto($t)) {
+            $fn = $t . '_summary';
+            if (function_exists($fn)) return (string) $fn($parsed);
+            return squadconf_default_name($t);
+        }
+    }
     return awg_summary($parsed);
 }

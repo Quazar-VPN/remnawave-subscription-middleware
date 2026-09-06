@@ -1,4 +1,79 @@
-<?php $sq_psize = pager_cookie_size('sqcfg_size'); ?>
+<?php $sq_psize = pager_cookie_size('sqcfg_size');
+    // Форк Quazar: общие рендереры для доп. контролов (позиция / xray-шаблон /
+    // расширенные оверрайды) — используются в форме добавления и в модалке правки.
+    $sqcfg_pos_options = function () use ($sqcfg_hosts) {
+        $o = '<option value="end">В конец (по умолчанию)</option><option value="start">В начало</option>';
+        foreach ($sqcfg_hosts as $ho) {
+            $rm = trim((string) ($ho['remark'] ?? ''));
+            if ($rm === '') continue;
+            $dis = !empty($ho['disabled']) ? ' (выкл.)' : '';
+            $o .= '<option value="before:' . h($rm) . '">перед ' . h($rm) . $dis . '</option>';
+            $o .= '<option value="after:' . h($rm) . '">после ' . h($rm) . $dis . '</option>';
+        }
+        return $o;
+    };
+    $sqcfg_tpl_options = function () use ($sqcfg_tpls) {
+        $o = '<option value="">как глобальный</option>';
+        foreach ($sqcfg_tpls as $t) {
+            $nm = ((string) ($t['name'] ?? '') !== '') ? (string) $t['name'] : (string) $t['uuid'];
+            $o .= '<option value="' . h((string) $t['uuid']) . '">' . h($nm) . '</option>';
+        }
+        return $o;
+    };
+    // $idp — префикс id ('sqcfg' для добавления, 'sqedit' для модалки).
+    $sqcfg_extra = function ($idp) use ($sqcfg_pos_options, $sqcfg_tpl_options, $sqcfg_hosts, $sqcfg_hosts_err) {
+        ?>
+        <div class="sqcfg-grid" style="margin-top:1rem">
+            <div>
+                <label for="<?= $idp ?>_position">Позиция в подписке</label>
+                <select id="<?= $idp ?>_position" name="position" class="sqcfg-sel"><?= $sqcfg_pos_options() ?></select>
+                <?php if ($sqcfg_hosts_err !== ''): ?>
+                    <div class="muted" style="font-size:.76rem;margin-top:.35rem">Список хостов недоступен — проверьте токен. Доступны только «В начало» / «В конец».</div>
+                <?php elseif (!$sqcfg_hosts): ?>
+                    <div class="muted" style="font-size:.76rem;margin-top:.35rem">Хосты панели не получены — доступны только «В начало» / «В конец».</div>
+                <?php endif; ?>
+            </div>
+            <div>
+                <label for="<?= $idp ?>_xray_tpl">Шаблон xray-json (этот конфиг)</label>
+                <select id="<?= $idp ?>_xray_tpl" name="xray_tpl" class="sqcfg-sel"><?= $sqcfg_tpl_options() ?></select>
+                <div class="muted" style="font-size:.76rem;margin-top:.35rem">Переопределяет глобальный «Шаблон xray-json для доп. конфигов». «как глобальный» — брать общий.</div>
+            </div>
+        </div>
+        <details class="sqcfg-adv" style="margin-top:.9rem;border:1px solid var(--line);border-radius:10px;padding:.2rem .8rem">
+            <summary style="cursor:pointer;font-weight:600;font-size:.85rem;padding:.55rem 0">Расширенные параметры (xray)</summary>
+            <div style="padding:.2rem 0 .7rem">
+                <div style="margin-bottom:.75rem">
+                    <label for="<?= $idp ?>_ov_server_description">serverDescription (Happ meta)</label>
+                    <input type="text" id="<?= $idp ?>_ov_server_description" name="ov_server_description" maxlength="512" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:.82rem">
+                    <div class="muted" style="font-size:.75rem;margin-top:.25rem">Строка-описание узла. Применяется только к xray-json (Happ).</div>
+                </div>
+                <div class="sqcfg-grid">
+                    <div>
+                        <label for="<?= $idp ?>_ov_xhttp_extra">XHTTP extra (JSON)</label>
+                        <textarea id="<?= $idp ?>_ov_xhttp_extra" name="ov_xhttp_extra" rows="4" spellcheck="false" placeholder='{"...": "..."}' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:.8rem"></textarea>
+                        <div class="muted" style="font-size:.75rem;margin-top:.25rem">Доп. поля transport xhttp. JSON-объект.</div>
+                    </div>
+                    <div>
+                        <label for="<?= $idp ?>_ov_mux">mux (JSON)</label>
+                        <textarea id="<?= $idp ?>_ov_mux" name="ov_mux" rows="4" spellcheck="false" placeholder='{"enabled": true}' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:.8rem"></textarea>
+                        <div class="muted" style="font-size:.75rem;margin-top:.25rem">Настройки mux. JSON-объект, только для xray-json (Happ).</div>
+                    </div>
+                    <div>
+                        <label for="<?= $idp ?>_ov_sockopt">sockopt (JSON)</label>
+                        <textarea id="<?= $idp ?>_ov_sockopt" name="ov_sockopt" rows="4" spellcheck="false" placeholder='{"tcpFastOpen": true}' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:.8rem"></textarea>
+                        <div class="muted" style="font-size:.75rem;margin-top:.25rem">streamSettings.sockopt. JSON-объект, только для xray-json (Happ).</div>
+                    </div>
+                    <div>
+                        <label for="<?= $idp ?>_ov_final_mask">finalMask (JSON)</label>
+                        <textarea id="<?= $idp ?>_ov_final_mask" name="ov_final_mask" rows="4" spellcheck="false" placeholder='{"...": "..."}' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:.8rem"></textarea>
+                        <div class="muted" style="font-size:.75rem;margin-top:.25rem">Параметры finalMask. JSON-объект.</div>
+                    </div>
+                </div>
+            </div>
+        </details>
+        <?php
+    };
+?>
     <style>
         .mc-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start}
         @media(max-width:720px){.mc-grid{grid-template-columns:1fr}}
@@ -110,8 +185,10 @@
                     <div>
                         <label for="sqcfg_raw">Конфиг</label>
                         <textarea id="sqcfg_raw" name="raw" rows="5" spellcheck="false" placeholder="vless://…" style="width:100%;font-family:monospace;font-size:.82rem;box-sizing:border-box"></textarea>
+                        <div class="muted" style="font-size:.78rem;margin-top:.5rem;line-height:1.5">Поддерживаются: <code>vless://</code>, <code>trojan://</code>, <code>ss://</code>, <code>hysteria2://</code>, <code>tuic://</code>.</div>
                     </div>
                 </div>
+                <?php $sqcfg_extra('sqcfg'); ?>
                 <div id="sqcfg_hint" class="sqcfg-hint" style="display:none"></div>
                 <div style="margin-top:1rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
                     <button type="submit" class="btn">Добавить конфиг</button>
@@ -207,7 +284,21 @@
                 $sumr = is_array($pn) ? squadconf_summary($pn) : ($c['type'] ?? '');
                 $csquads = squadconf_squads_of($c);
                 $on = (int) $c['enabled'] === 1;
-                $sqcfg_edit[(int) $c['id']] = ['squads' => array_values($csquads), 'name' => (string) ($c['name'] ?? ''), 'raw' => (string) $c['raw']];
+                $c_ov = squadconf_overrides_of($c);
+                $ov_j = function ($v) { return (is_array($v) && $v) ? json_encode($v, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : ''; };
+                $c_pos = (string) ($c['position'] ?? '');
+                $sqcfg_edit[(int) $c['id']] = [
+                    'squads' => array_values($csquads),
+                    'name' => (string) ($c['name'] ?? ''),
+                    'raw' => (string) $c['raw'],
+                    'position' => ($c_pos === '' ? 'end' : $c_pos),
+                    'xray_tpl' => squadconf_tpl_of($c),
+                    'ov_server_description' => (string) ($c_ov['serverDescription'] ?? ''),
+                    'ov_xhttp_extra' => $ov_j($c_ov['xhttpExtra'] ?? null),
+                    'ov_mux' => $ov_j($c_ov['mux'] ?? null),
+                    'ov_sockopt' => $ov_j($c_ov['sockopt'] ?? null),
+                    'ov_final_mask' => $ov_j($c_ov['finalMask'] ?? null),
+                ];
             ?>
             <tr>
                 <td><?php foreach ($csquads as $sq): ?><span class="sq-tag"><?= h($sqcfg_names[$sq] ?? $sq) ?></span><?php endforeach; ?></td>
@@ -270,7 +361,8 @@
                         <label>Конфиг</label>
                         <textarea name="raw" id="sqedit_raw" rows="9" spellcheck="false" required style="width:100%;font-family:monospace;font-size:.82rem;box-sizing:border-box"></textarea>
                     </div>
-                    <div style="display:flex;gap:.6rem">
+                    <?php $sqcfg_extra('sqedit'); ?>
+                    <div style="display:flex;gap:.6rem;margin-top:.85rem">
                         <button type="submit" class="btn">Сохранить изменения</button>
                         <button type="button" class="sqcfg-btn" onclick="sqEditClose()">Отмена</button>
                     </div>

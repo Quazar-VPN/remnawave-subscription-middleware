@@ -90,6 +90,20 @@
             document.getElementById('sqedit_name').value = d.name || '';
             var g = document.getElementById('sqedit_grp'); if (g) g.value = d.grp || '';
             document.getElementById('sqedit_raw').value = d.raw || '';
+            var setV = function(id, val){ var el = document.getElementById(id); if (el) el.value = (val == null ? '' : val); };
+            var posEl = document.getElementById('sqedit_position');
+            if (posEl) {
+                var pv = d.position || 'end';
+                var ok = false;
+                for (var i = 0; i < posEl.options.length; i++) { if (posEl.options[i].value === pv) { ok = true; break; } }
+                posEl.value = ok ? pv : 'end';
+            }
+            setV('sqedit_xray_tpl', d.xray_tpl || '');
+            setV('sqedit_ov_server_description', d.ov_server_description);
+            setV('sqedit_ov_xhttp_extra', d.ov_xhttp_extra);
+            setV('sqedit_ov_mux', d.ov_mux);
+            setV('sqedit_ov_sockopt', d.ov_sockopt);
+            setV('sqedit_ov_final_mask', d.ov_final_mask);
             modal.classList.add('open');
         }
         document.querySelectorAll('.sqcfg-edit').forEach(function(b){ b.addEventListener('click',function(){ openEdit(b.dataset.id); }); });
