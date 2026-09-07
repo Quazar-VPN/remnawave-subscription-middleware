@@ -539,6 +539,126 @@ if ($r === 'grace_users') {
     jout(['ok' => true, 'rows' => $rows]);
 }
 
+// --- HWID / ручная блокировка -----------------------------------------------
+if ($r === 'hwid') {
+    jout(['ok' => true, 'blocked_remarks' => implode("\n", get_blocked_remarks())]);
+}
+if ($r === 'save_hwid') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $lines = array_values(array_filter(array_map('trim', explode("\n", str_replace("\r", '', (string) ($b['blocked_remarks'] ?? '')))), fn($s) => $s !== ''));
+    set_setting('blocked_remarks', json_encode($lines, JSON_UNESCAPED_UNICODE));
+    jout(['ok' => true, 'msg' => 'Настройки HWID-блокировки сохранены']);
+}
+
+// --- Оверрайды --------------------------------------------------------------
+if ($r === 'overrides') {
+    $rows = [];
+    $ov_expire = [];
+    if ($p = db()) {
+        try { foreach ($p->query('SELECT * FROM overrides ORDER BY updated_at DESC LIMIT 500') as $o) $rows[] = $o; } catch (Throwable $e) {}
+    }
+    if ($rows && remnawave_url() !== '' && remnawave_token() !== '') {
+        $e = '';
+        foreach (remnawave_all_users($e) as $u) {
+            if (!empty($u['shortUuid']) && !empty($u['expireAt'])) {
+                $ts = strtotime((string) $u['expireAt']);
+                if ($ts !== false) $ov_expire[(string) $u['shortUuid']] = $ts;
+            }
+        }
+    }
+    jout(['ok' => true, 'overrides' => $rows, 'ov_expire' => $ov_expire, 'grace_days' => expired_grace_days()]);
+}
+if ($r === 'add_override') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $mt = ($b['match_type'] ?? '') === 'hwid' ? 'hwid' : 'shortuuid';
+    $mv = trim((string) ($b['match_value'] ?? ''));
+    $rs = ($b['reason'] ?? '') === 'blocked' ? 'blocked' : 'expired';
+    $note = trim((string) ($b['note'] ?? ''));
+    if ($mv === '') jout(['ok' => false, 'error' => 'empty']);
+    upsert_override($mt, $mv, $rs, 'manual', null, $note !== '' ? $note : 'manual');
+    jout(['ok' => true, 'msg' => 'Оверрайд добавлен']);
+}
+if ($r === 'del_override') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $id = (int) ($b['id'] ?? 0);
+    if ($id && ($p = db())) $p->prepare('DELETE FROM overrides WHERE id = ?')->execute([$id]);
+    jout(['ok' => true, 'msg' => 'Оверрайд удалён']);
+}
+
+// --- Правила ответа по приложению -------------------------------------------
+if ($r === 'rules') {
+    jout([
+        'ok'              => true,
+        'rules'           => response_rules_all(),
+        'client_catalog'  => rules_client_catalog(),
+        'headers_catalog' => app_headers_catalog(),
+    ]);
+}
+if ($r === 'save_rules') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    rules_save_from_json(json_encode($b['rules'] ?? [], JSON_UNESCAPED_UNICODE));
+    jout(['ok' => true, 'msg' => 'Правила ответа сохранены']);
+}
+if ($r === 'test_rule') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $ov = ['user-agent' => (string) ($b['ua'] ?? '')];
+    $os = strtolower(trim((string) ($b['os'] ?? '')));
+    if ($os !== '') $ov['x-device-os'] = $os;
+    $res = rules_test($ov);
+    jout(['ok' => true, 'matched' => $res['matched'], 'headers' => $res['headers']]);
+}
+
+// --- Слияние подписок (настройки + ручные привязки) -------------------------
+if ($r === 'addsub') {
+    jout([
+        'ok'             => true,
+        'enabled'        => addsub_enabled(),
+        'suffix'         => addsub_suffix(),
+        'cache_ttl'      => addsub_cache_ttl(),
+        'label'          => addsub_label(),
+        'stub_on_traffic'=> addsub_stub_on_traffic(),
+        'stub_label'     => addsub_stub_label(),
+        'merge_xray'     => addsub_xray_enabled(),
+        'parallel_fetch' => addsub_parallel_enabled(),
+        'map'            => array_map(fn($m) => [
+            'main_short' => (string) $m['main_short'],
+            'note'       => (string) ($m['note'] ?? ''),
+            'add_url'    => (string) $m['add_url'],
+        ], addsub_map_all()),
+    ]);
+}
+if ($r === 'save_addsub') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('addsub_enabled', !empty($b['enabled']) ? '1' : '0');
+    $suf = trim((string) ($b['suffix'] ?? '_addsub'));
+    set_setting('addsub_username_suffix', $suf === '' ? '_addsub' : $suf);
+    set_setting('addsub_cache_ttl', (string) max(30, (int) ($b['cache_ttl'] ?? 600)));
+    set_setting('addsub_label', trim((string) ($b['label'] ?? '')));
+    set_setting('addsub_stub_on_traffic', !empty($b['stub_on_traffic']) ? '1' : '0');
+    set_setting('addsub_stub_label', trim((string) ($b['stub_label'] ?? '')));
+    set_setting('addsub_merge_xray', !empty($b['merge_xray']) ? '1' : '0');
+    set_setting('addsub_parallel_fetch', !empty($b['parallel_fetch']) ? '1' : '0');
+    jout(['ok' => true, 'msg' => 'Настройки слияния подписок сохранены']);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт

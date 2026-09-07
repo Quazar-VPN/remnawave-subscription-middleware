@@ -33,6 +33,10 @@ import { Whlog } from './Whlog';
 import { Fwdlog } from './Fwdlog';
 import { Subst } from './Subst';
 import { GraceUsers } from './GraceUsers';
+import { Rules } from './Rules';
+import { Hwid } from './Hwid';
+import { Overrides } from './Overrides';
+import { Addsub } from './Addsub';
 
 export interface TabDef {
   id: string;
@@ -83,13 +87,13 @@ export const NAV: NavSection[] = [
   {
     label: 'Доступ / подмена',
     items: [
-      { id: 'rules', label: 'Правила ответа', icon: IconRoute },
-      { id: 'hwid', label: 'HWID', icon: IconFingerprint },
-      { id: 'overrides', label: 'Оверрайды', icon: IconArrowsExchange },
+      { id: 'rules', label: 'Правила ответа', icon: IconRoute, component: Rules },
+      { id: 'hwid', label: 'HWID', icon: IconFingerprint, component: Hwid },
+      { id: 'overrides', label: 'Оверрайды', icon: IconArrowsExchange, component: Overrides },
       { id: 'squad_configs', label: 'Доп. конфиги', icon: IconFilePlus },
       { id: 'wg_pool', label: 'WG / AWG', icon: IconTopologyStar3 },
       { id: 'ext_import', label: 'Импорт из подписок', icon: IconDownload },
-      { id: 'addsub', label: 'Слияние подписок', icon: IconGitMerge },
+      { id: 'addsub', label: 'Слияние подписок', icon: IconGitMerge, component: Addsub },
       { id: 'clod', label: 'Защищённый канал', icon: IconShieldLock },
     ],
   },
