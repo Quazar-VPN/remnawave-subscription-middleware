@@ -149,4 +149,113 @@ if ($r === 'sysinfo') {
     ]);
 }
 
+// «Лог запросов». Строки отдаём УЖЕ обогащёнными — теми же функциями
+// lib/logging.php + lib/clientver.php, что и легаси-рендер, чтобы React не
+// переизобретал разбор UA / версий / meta. Фильтры читаются из $_GET
+// (rl_dec|rl_fmt|rl_hours|rl_q) через reqlog_filters() внутри reqlog_prepare().
+if ($r === 'reqlog') {
+    require_once __DIR__ . '/inc/_reqlog_rows.php';
+    [$f, $rows, $ctx, $total_users] = reqlog_prepare();
+    $nolog = array_values(nolog_shortuuids());
+    jout([
+        'ok'          => true,
+        'filters'     => $f,
+        'overview'    => reqlog_overview(),
+        'today'       => reqlog_today_stats(),
+        'total_users' => (int) $total_users,
+        'nolog'       => $nolog,
+        'rows'        => reqlog_serialize_rows($rows, $ctx),
+    ]);
+}
+
+if ($r === 'reqlog_nolog') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $body = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($body)) $body = [];
+    $su = trim((string) ($body['short'] ?? ''));
+    if ($su === '') jout(['ok' => false, 'error' => 'empty short']);
+    $on = !empty($body['on']);
+    nolog_set($su, $on);
+    jout(['ok' => true, 'nolog' => $on]);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
+
+// Сериализация строк лога в JSON. Повторяет входные данные reqlog_render_rows,
+// но отдаёт структуру, а не HTML — разметку строит React.
+function reqlog_serialize_rows(array $rows, array $ctx): array {
+    $names = $ctx['names'] ?? [];
+    $users = $ctx['users'] ?? [];
+    $idx   = $ctx['idx'] ?? [];
+    $hist  = $ctx['hist'] ?? [];
+    $ov    = $ctx['ov'] ?? [];
+    $out = [];
+    foreach ($rows as $r) {
+        $su   = (string) ($r['short_uuid'] ?? '');
+        $dec  = (string) ($r['decision'] ?? 'normal');
+        $meta = reqlog_meta($r);
+        $as   = is_array($meta['as'] ?? null) ? $meta['as'] : [];
+        $cl   = reqlog_client((string) ($r['user_agent'] ?? ''));
+        $cos  = (string) ($cl['os'] ?? '');
+        if ($cos === '') $cos = reqlog_os_norm((string) ($meta['dv']['o'] ?? ''));
+        $cv   = clientver_status($cl['key'] ?? '', $cl['ver'] ?? '', $cos);
+        $dvl  = reqlog_device_label($meta['dv'] ?? null);
+        if ($dvl !== '') $cl['dev'] = $dvl;
+        $name = ($su !== '' && isset($names[$su])) ? (string) $names[$su] : '';
+        $u    = $users[$su] ?? [];
+        $hwid = (string) ($r['hwid'] ?? '');
+        $ovl  = ($hwid !== '' && isset($ov[mb_strtolower($hwid)])) ? (string) $ov[mb_strtolower($hwid)] : '';
+        $ui   = $idx[$su] ?? [];
+
+        $out[] = [
+            'id'         => (int) ($r['id'] ?? 0),
+            'ts'         => (string) ($r['ts'] ?? ''),
+            'ts_epoch'   => (int) ($r['ts_epoch'] ?? 0),
+            'dup'        => (int) ($r['dup'] ?? 1),
+            'decision'   => $dec,
+            'why'        => rl_dec_why($dec, $meta),
+            'fmt'        => (string) ($r['fmt'] ?? ''),
+            'fmt_label'  => reqlog_fmt_label((string) ($r['fmt'] ?? '')),
+            'as'         => [
+                's'  => (string) ($as['s'] ?? ''),
+                'n'  => (int) ($as['n'] ?? 0),
+                'b'  => (int) ($as['b'] ?? 0),
+                'ms' => (int) ($as['ms'] ?? 0),
+                'm'  => (string) ($as['m'] ?? ''),
+                'su' => (string) ($as['su'] ?? ''),
+                'h'  => (string) ($as['h'] ?? ''),
+                'c'  => isset($as['c']) ? (int) $as['c'] : null,
+            ],
+            'short_uuid' => $su,
+            'name'       => $name,
+            'status'     => (string) ($u['status'] ?? ''),
+            'dev_limit'  => ($u['lim'] ?? '') === '' ? null : (int) $u['lim'],
+            'hwid'       => $hwid,
+            'ov_label'   => $ovl,
+            'client'     => [
+                'app' => (string) ($cl['app'] ?? ''),
+                'dev' => (string) ($cl['dev'] ?? ''),
+                'ver' => (string) ($cl['ver'] ?? ''),
+                'os'  => $cos,
+            ],
+            'cv'         => [
+                's'      => (string) ($cv['s'] ?? 'none'),
+                'cur'    => (string) ($cv['cur'] ?? ''),
+                'latest' => (string) ($cv['latest'] ?? ''),
+            ],
+            'day'        => (int) ($ui['day'] ?? 0),
+            'dev_count'  => (int) ($ui['dev'] ?? 0),
+            'first_ts'   => (int) ($ui['first'] ?? 0),
+            'history'    => array_values($hist[$su] ?? []),
+            'ip'         => (string) ($r['ip'] ?? ''),
+            'path'       => (string) ($r['path'] ?? ''),
+            'ctype'      => (string) ($r['ctype'] ?? ''),
+            'bytes'      => (int) ($r['bytes'] ?? 0),
+            'expire_ts'  => (int) ($r['expire_ts'] ?? 0),
+            'wg'         => (int) ($meta['wg'] ?? 0),
+            'grace'      => !empty($meta['grace']),
+        ];
+    }
+    return $out;
+}
