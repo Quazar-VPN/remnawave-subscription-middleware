@@ -25,6 +25,7 @@ import {
 } from '@tabler/icons-react';
 import { Sysinfo } from './Sysinfo';
 import { ReqLog } from './ReqLog';
+import { Users } from './Users';
 
 export interface TabDef {
   id: string;
@@ -45,7 +46,7 @@ export const NAV: NavSection[] = [
   {
     label: 'Главное',
     items: [
-      { id: 'users', label: 'Пользователи', icon: IconUsers },
+      { id: 'users', label: 'Пользователи', icon: IconUsers, component: Users },
       { id: 'chat', label: 'Чат поддержки', icon: IconMessageCircle },
       { id: 'reqlog', label: 'Лог запросов', icon: IconListDetails, component: ReqLog },
     ],
