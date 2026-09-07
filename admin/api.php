@@ -373,7 +373,152 @@ if ($r === 'landing_ack_fp') {
     jout(['ok' => true]);
 }
 
+// --- Вебхуки: настройки + раздвоение ----------------------------------------
+if ($r === 'webhooks') {
+    $we = panel_webhook_enabled(); // true | false | null
+    jout([
+        'ok'                 => true,
+        'panel_webhook'      => $we === null ? null : (bool) $we,
+        'wh_url'             => (mirror_domain() !== '' ? ('https://' . mirror_domain() . '/webhook.php') : '/webhook.php'),
+        'webhook_secret'     => webhook_secret(),
+        'forward_enabled'    => forward_enabled(),
+        'forward_timeout'    => forward_timeout(),
+        'forward_targets'    => forward_targets(),
+    ]);
+}
+
+if ($r === 'save_forward') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('forward_enabled', !empty($b['forward_enabled']) ? '1' : '0');
+    set_setting('forward_timeout', (string) max(2, (int) ($b['forward_timeout'] ?? 8)));
+    $clean = [];
+    foreach ((array) ($b['forward_targets'] ?? []) as $t) {
+        if (!is_array($t)) continue;
+        $url = trim((string) ($t['url'] ?? ''));
+        if ($url === '') continue;
+        $clean[] = [
+            'name'    => trim((string) ($t['name'] ?? '')),
+            'url'     => $url,
+            'secret'  => (string) ($t['secret'] ?? ''),
+            'enabled' => !empty($t['enabled']),
+        ];
+    }
+    set_setting('forward_targets', json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    ensure_forward_log();
+    jout(['ok' => true, 'msg' => 'Настройки раздвоения сохранены']);
+}
+
+if ($r === 'test_forward') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $targets = null;
+    if (isset($b['targets']) && is_array($b['targets'])) {
+        $targets = [];
+        foreach ($b['targets'] as $t) {
+            if (!is_array($t)) continue;
+            if (array_key_exists('enabled', $t) && $t['enabled'] === false) continue;
+            $url = trim((string) ($t['url'] ?? ''));
+            if ($url === '' || !preg_match('~^https?://~i', $url)) continue;
+            $targets[] = ['name' => trim((string) ($t['name'] ?? '')), 'url' => $url, 'secret' => (string) ($t['secret'] ?? ''), 'enabled' => true];
+        }
+    }
+    $payload = json_encode(['event' => 'test.ping', 'data' => ['ts' => time(), 'source' => 'middleware']], JSON_UNESCAPED_UNICODE);
+    $results = forward_webhook($payload, 'test.ping', true, $targets);
+    jout(['ok' => true, 'results' => $results]);
+}
+
+// Лог вебхуков (scope=user — события юзеров, scope=other — прочие).
+if ($r === 'whlog') {
+    jout(whlog_payload(
+        ($_GET['scope'] ?? 'user') === 'other' ? 'other' : 'user',
+        [
+            'event' => trim((string) ($_GET['event'] ?? '')),
+            'sig'   => (string) ($_GET['sig'] ?? ''),
+            'hours' => (int) ($_GET['hours'] ?? 0),
+            'action'=> trim((string) ($_GET['action'] ?? '')),
+            'flt'   => trim((string) ($_GET['flt'] ?? '')),
+        ]
+    ));
+}
+
+// Лог пересылки («тройник»).
+if ($r === 'fwdlog') {
+    $rows = [];
+    if ($p = db()) {
+        ensure_forward_log();
+        try { foreach ($p->query('SELECT * FROM forward_log ORDER BY id DESC LIMIT 300') as $row) $rows[] = $row; }
+        catch (Throwable $e) {}
+    }
+    jout(['ok' => true, 'rows' => $rows]);
+}
+
+if ($r === 'clear_fwdlog') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    if ($p = db()) { try { $p->exec('DELETE FROM forward_log'); } catch (Throwable $e) {} }
+    jout(['ok' => true, 'msg' => 'Лог пересылки очищен']);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
+
+// Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт
+// на клиенте, и без panel-API добора имён; быстрый DB-добор имён сохранён).
+function whlog_payload(string $scope, array $flt): array {
+    $out = ['ok' => true, 'rows' => [], 'events' => [], 'actions' => [], 'total' => 0, 'matched' => 0];
+    $p = db();
+    if (!$p) return $out;
+    $user_cond = "(event LIKE 'user.%' OR short_uuid IS NOT NULL OR username IS NOT NULL)";
+    $wh_scope  = $scope === 'user' ? $user_cond : "NOT $user_cond";
+    $conds = [$wh_scope];
+    $args  = [];
+    if ($flt['event'] !== '') { $conds[] = 'event = ?'; $args[] = $flt['event']; }
+    if ($flt['sig'] === '1' || $flt['sig'] === '0') { $conds[] = 'sig_ok = ?'; $args[] = (int) $flt['sig']; }
+    if (in_array($flt['hours'], [1, 24, 168], true)) { $conds[] = sql_epoch('ts') . ' >= ?'; $args[] = time() - $flt['hours'] * 3600; }
+    if ($scope === 'user' && $flt['action'] !== '') { $conds[] = 'action = ?'; $args[] = $flt['action']; }
+    if ($scope === 'user' && $flt['flt'] !== '') {
+        $like = '%' . strtr($flt['flt'], ['!' => '!!', '%' => '!%', '_' => '!_']) . '%';
+        $conds[] = "(short_uuid LIKE ? ESCAPE '!' OR username LIKE ? ESCAPE '!')";
+        $args[] = $like; $args[] = $like;
+    }
+    $where = implode(' AND ', $conds);
+    try {
+        // Быстрый добор имён старым hwid-строкам из соседних записей того же shortUuid.
+        $bf = "event LIKE 'user_hwid%' AND (username IS NULL OR username = '') AND short_uuid IS NOT NULL AND short_uuid <> ''";
+        if ((int) $p->query("SELECT COUNT(*) FROM webhook_log WHERE $bf")->fetchColumn() > 0) {
+            $nm = $p->prepare("SELECT username FROM webhook_log WHERE short_uuid = ? AND username IS NOT NULL AND username <> '' ORDER BY id DESC LIMIT 1");
+            $up = $p->prepare("UPDATE webhook_log SET username = ? WHERE short_uuid = ? AND (username IS NULL OR username = '')");
+            foreach ($p->query("SELECT DISTINCT short_uuid FROM webhook_log WHERE $bf LIMIT 200") as $row) {
+                $bs = (string) $row['short_uuid'];
+                $nm->execute([$bs]);
+                $bn = $nm->fetchColumn();
+                if (is_string($bn) && $bn !== '') $up->execute([$bn, $bs]);
+            }
+        }
+        foreach ($p->query("SELECT event, COUNT(*) AS c FROM webhook_log WHERE $wh_scope GROUP BY event ORDER BY c DESC, event") as $row) {
+            $out['events'][] = ['event' => (string) $row['event'], 'count' => (int) $row['c']];
+        }
+        $out['total'] = array_sum(array_column($out['events'], 'count'));
+        if ($scope === 'user') {
+            foreach ($p->query("SELECT DISTINCT action FROM webhook_log WHERE $wh_scope AND action IS NOT NULL ORDER BY action") as $row) {
+                $out['actions'][] = (string) $row['action'];
+            }
+        }
+        $st = $p->prepare("SELECT COUNT(*) FROM webhook_log WHERE $where");
+        $st->execute($args);
+        $out['matched'] = (int) $st->fetchColumn();
+        $st = $p->prepare("SELECT *, " . sql_epoch('ts') . " AS ts_epoch FROM webhook_log WHERE $where ORDER BY id DESC LIMIT 3000");
+        $st->execute($args);
+        $out['rows'] = $st->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('submw whlog api: ' . $e->getMessage());
+    }
+    return $out;
+}
 
 // Сборка списка пользователей с теми же вычислениями, что делает контроллер
 // легаси-таба перед tab_users.php (статус/грейс/источник/ссылка/nolog/доп).

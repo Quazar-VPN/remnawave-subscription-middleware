@@ -28,6 +28,9 @@ import { ReqLog } from './ReqLog';
 import { Users } from './Users';
 import { Connection } from './Connection';
 import { Branding } from './Branding';
+import { Webhooks } from './Webhooks';
+import { Whlog } from './Whlog';
+import { Fwdlog } from './Fwdlog';
 
 export interface TabDef {
   id: string;
@@ -63,9 +66,9 @@ export const NAV: NavSection[] = [
   {
     label: 'Вебхуки',
     items: [
-      { id: 'webhooks', label: 'Настройки', icon: IconSettings },
-      { id: 'fwdlog', label: 'Лог пересылки', icon: IconArrowForwardUp },
-      { id: 'whlog', label: 'Лог вебхуков', icon: IconWebhook },
+      { id: 'webhooks', label: 'Настройки', icon: IconSettings, component: Webhooks },
+      { id: 'fwdlog', label: 'Лог пересылки', icon: IconArrowForwardUp, component: Fwdlog },
+      { id: 'whlog', label: 'Лог вебхуков', icon: IconWebhook, component: Whlog },
     ],
   },
   {
