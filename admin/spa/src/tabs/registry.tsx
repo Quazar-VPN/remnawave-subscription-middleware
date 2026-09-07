@@ -26,6 +26,8 @@ import {
 import { Sysinfo } from './Sysinfo';
 import { ReqLog } from './ReqLog';
 import { Users } from './Users';
+import { Connection } from './Connection';
+import { Branding } from './Branding';
 
 export interface TabDef {
   id: string;
@@ -54,8 +56,8 @@ export const NAV: NavSection[] = [
   {
     label: 'Настройки',
     items: [
-      { id: 'connection', label: 'Подключение', icon: IconPlug },
-      { id: 'branding', label: 'Брендинг', icon: IconBrush },
+      { id: 'connection', label: 'Подключение', icon: IconPlug, component: Connection },
+      { id: 'branding', label: 'Брендинг', icon: IconBrush, component: Branding },
     ],
   },
   {
