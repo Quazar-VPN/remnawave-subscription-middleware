@@ -31,6 +31,8 @@ import { Branding } from './Branding';
 import { Webhooks } from './Webhooks';
 import { Whlog } from './Whlog';
 import { Fwdlog } from './Fwdlog';
+import { Subst } from './Subst';
+import { GraceUsers } from './GraceUsers';
 
 export interface TabDef {
   id: string;
@@ -74,8 +76,8 @@ export const NAV: NavSection[] = [
   {
     label: 'Грейс',
     items: [
-      { id: 'subst', label: 'Грейс-сквад', icon: IconArrowsShuffle },
-      { id: 'grace_users', label: 'Грейс-юзеры', icon: IconClock },
+      { id: 'subst', label: 'Грейс-сквад', icon: IconArrowsShuffle, component: Subst },
+      { id: 'grace_users', label: 'Грейс-юзеры', icon: IconClock, component: GraceUsers },
     ],
   },
   {
