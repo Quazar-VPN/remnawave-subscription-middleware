@@ -4,3 +4,5 @@
 data
 config.php
 *.sqlite
+admin/spa/node_modules
+admin/app
