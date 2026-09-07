@@ -793,6 +793,216 @@ if ($r === 'extsub_resync') {
     jout(['ok' => $e === '', 'error' => $e, 'msg' => $e === '' ? ('Синхронизировано: ' . $n) : $e, 'count' => $n]);
 }
 
+// --- Обновление -------------------------------------------------------------
+if ($r === 'update') {
+    $log = json_decode((string) setting('update_last_log', '[]'), true);
+    jout([
+        'ok'              => true,
+        'installed_commit'=> update_installed_commit(),
+        'local_commit'    => function_exists('update_local_git_commit') ? update_local_git_commit() : '',
+        'branch'          => update_branch(),
+        'available'       => update_available(),
+        'repo'            => function_exists('update_repo') ? update_repo() : '',
+        'root'            => function_exists('update_root') ? update_root() : '',
+        'web_user'        => function_exists('update_web_user') ? update_web_user() : '',
+        'in_docker'       => submw_in_docker(),
+        'state'           => update_state(),
+        'last_log'        => is_array($log) ? $log : [],
+    ]);
+}
+if (in_array($r, ['update_check', 'update_apply', 'update_rollback', 'update_set_current', 'update_switch_branch'], true)) {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $e = '';
+    if ($r === 'update_check') {
+        $res = update_refresh($e);
+        jout(['ok' => $res !== null, 'msg' => $res !== null ? 'Проверка обновлений выполнена' : ('Ошибка: ' . ($e ?: 'нет связи с GitHub')), 'state' => update_state()]);
+    }
+    if ($r === 'update_switch_branch') {
+        $ok = update_set_branch(trim((string) ($b['branch'] ?? '')), $e);
+        jout(['ok' => $ok, 'msg' => $ok ? 'Ветка переключена' : ('Ошибка: ' . $e)]);
+    }
+    if ($r === 'update_set_current') {
+        $ok = update_set_current($e);
+        jout(['ok' => $ok, 'msg' => $ok ? 'Текущая версия отмечена базовым коммитом' : ('Ошибка: ' . $e)]);
+    }
+    if ($r === 'update_apply' || $r === 'update_rollback') {
+        $log = []; $e = '';
+        $ok = $r === 'update_apply' ? update_apply($log, $e) : update_rollback($log, $e);
+        set_setting('update_last_log', json_encode($log, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        jout(['ok' => $ok, 'msg' => $ok ? (($r === 'update_apply' ? 'Обновление применено' : 'Откат выполнен') . ', файлов: ' . count($log)) : (($r === 'update_apply' ? 'Обновление не выполнено: ' : 'Откат не выполнен: ') . $e), 'log' => $log]);
+    }
+}
+
+// --- База данных: миграция + сборка мусора ----------------------------------
+if ($r === 'migrate') {
+    jout([
+        'ok'        => true,
+        'driver'    => db_driver(),
+        'in_docker' => submw_in_docker(),
+        'env_db'    => submw_in_docker() ? submw_env_db() : null,
+        'db_info'   => metrics_db_info(),
+        'gc'        => gc_overview(),
+        'gc_periods'=> gc_periods(),
+        'gc_free'   => function_exists('gc_free_bytes') ? gc_free_bytes() : null,
+    ]);
+}
+if ($r === 'migrate_db') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $to  = (string) ($b['to'] ?? '');
+    $cur = db_driver();
+    $e = '';
+    if ($to === 'mysql' && $cur !== 'mysql') {
+        $envdb = submw_in_docker() ? submw_env_db() : null;
+        $mc = $envdb ?: [
+            'driver' => 'mysql',
+            'host'   => (trim((string) ($b['m_host'] ?? '')) ?: '127.0.0.1'),
+            'port'   => (int) (trim((string) ($b['m_port'] ?? '')) ?: 3306),
+            'name'   => trim((string) ($b['m_name'] ?? '')),
+            'user'   => trim((string) ($b['m_user'] ?? '')),
+            'pass'   => (string) ($b['m_pass'] ?? ''),
+        ];
+        if (($mc['name'] ?? '') === '' || ($mc['user'] ?? '') === '') jout(['ok' => false, 'error' => 'Укажите имя БД и пользователя MySQL.']);
+        $ok = db_migrate(db_conf(), $mc, $e);
+        jout(['ok' => $ok, 'msg' => $ok ? 'Миграция на MySQL завершена.' : ('Ошибка: ' . $e)]);
+    } elseif ($to === 'sqlite' && $cur !== 'sqlite') {
+        $ok = db_migrate(db_conf(), ['driver' => 'sqlite', 'path' => default_db_path()], $e);
+        jout(['ok' => $ok, 'msg' => $ok ? 'Миграция на SQLite завершена.' : ('Ошибка: ' . $e)]);
+    }
+    jout(['ok' => false, 'error' => 'Нечего мигрировать — уже на этой БД.']);
+}
+if ($r === 'gc_purge') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $days = (int) ($b['days'] ?? 0);
+    if (!in_array($days, gc_periods(), true)) $days = 0;
+    $sel = is_array($b['tables'] ?? null) ? $b['tables'] : [];
+    $all = gc_tables();
+    $done = 0; $left = 0; $any = false;
+    @set_time_limit(60);
+    $t0 = microtime(true);
+    foreach ($sel as $name) {
+        $name = (string) $name;
+        if (!isset($all[$name])) continue;
+        $any = true;
+        $budget = 15.0 - (microtime(true) - $t0);
+        if ($budget > 0) $done += gc_purge($name, $days, $budget);
+        $left += (int) gc_count($name, $days);
+    }
+    if (!$any) jout(['ok' => false, 'error' => 'Не выбрано ни одной таблицы']);
+    jout(['ok' => true, 'msg' => 'Удалено строк: ' . $done . ($left > 0 ? '. Осталось ' . $left . ' — нажмите ещё раз' : '. Больше нечего'), 'left' => $left]);
+}
+if ($r === 'gc_compact') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    @set_time_limit(0);
+    $e = '';
+    $ok = gc_compact($e);
+    jout(['ok' => $ok, 'msg' => $ok ? 'База сжата' : ('Не удалось: ' . $e)]);
+}
+
+// --- Чат поддержки ----------------------------------------------------------
+if ($r === 'chat') {
+    jout([
+        'ok'              => true,
+        'enabled'         => chat_enabled(),
+        'agent_name'      => chat_agent_name(),
+        'agent_photo'     => chat_agent_photo(),
+        'greeting'        => chat_greeting(),
+        'widget_preset'   => (int) chat_widget_preset(),
+        'widget_position' => chat_widget_position(),
+        'widget_color'    => chat_widget_color(),
+        'widget_text'     => chat_widget_text(),
+        'poll_interval'   => (int) chat_poll_interval(),
+        'tg_enabled'      => chat_tg_enabled(),
+        'tg_token_set'    => chat_tg_token() !== '',
+        'tg_chat_id'      => chat_tg_chat_id(),
+        'tg_api_base'     => (string) setting('chat_tg_api_base', ''),
+        'tg_webhook_url'  => chat_tg_webhook_url(),
+        'webhook_enabled' => chat_webhook_enabled(),
+        'webhook_url'     => chat_webhook_url(),
+        'webhook_secret_set' => chat_webhook_secret() !== '',
+        'inbound_url'     => function_exists('chat_inbound_url') ? chat_inbound_url() : '',
+        'inbound_secret'  => function_exists('chat_inbound_secret') ? chat_inbound_secret() : '',
+    ]);
+}
+if ($r === 'save_chat_cfg') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('chat_enabled', !empty($b['enabled']) ? '1' : '0');
+    set_setting('chat_agent_name', trim((string) ($b['agent_name'] ?? '')));
+    set_setting('chat_agent_photo', trim((string) ($b['agent_photo'] ?? '')));
+    set_setting('chat_greeting', trim((string) ($b['greeting'] ?? '')));
+    $preset = (int) ($b['widget_preset'] ?? 1);
+    set_setting('chat_widget_preset', (string) (($preset >= 1 && $preset <= 3) ? $preset : 1));
+    set_setting('chat_widget_position', ($b['widget_position'] ?? 'right') === 'left' ? 'left' : 'right');
+    $color = trim((string) ($b['widget_color'] ?? ''));
+    set_setting('chat_widget_color', preg_match('/^#[0-9a-fA-F]{6}$/', $color) ? $color : '#4f46e5');
+    set_setting('chat_widget_text', trim((string) ($b['widget_text'] ?? '')));
+    set_setting('chat_poll_interval', (string) max(2, min(30, (int) ($b['poll_interval'] ?? 4))));
+    set_setting('chat_tg_enabled', !empty($b['tg_enabled']) ? '1' : '0');
+    if (($b['tg_bot_token'] ?? '') !== '') set_setting('chat_tg_bot_token', trim((string) $b['tg_bot_token']));
+    set_setting('chat_tg_chat_id', trim((string) ($b['tg_chat_id'] ?? '')));
+    set_setting('chat_tg_api_base', rtrim(trim((string) ($b['tg_api_base'] ?? '')), '/'));
+    set_setting('chat_webhook_enabled', !empty($b['webhook_enabled']) ? '1' : '0');
+    set_setting('chat_webhook_url', trim((string) ($b['webhook_url'] ?? '')));
+    if (($b['webhook_secret'] ?? '') !== '') set_setting('chat_webhook_secret', trim((string) $b['webhook_secret']));
+    $msg = 'Настройки чата сохранены';
+    if (chat_tg_enabled() && chat_tg_token() !== '') {
+        [$wok, , $werr] = chat_tg_set_webhook(chat_tg_webhook_url());
+        $msg .= $wok ? ' · вебхук бота установлен' : (' · вебхук НЕ установлен: ' . $werr);
+    }
+    jout(['ok' => true, 'msg' => $msg]);
+}
+if ($r === 'chat_sessions') {
+    jout(['ok' => true, 'sessions' => chat_sessions_list(100), 'unread' => chat_unread_total()]);
+}
+if ($r === 'chat_msgs') {
+    $sid = (int) ($_GET['sid'] ?? 0);
+    $after = (int) ($_GET['after'] ?? 0);
+    if ($after === 0) chat_mark_read($sid);
+    jout(['ok' => true, 'messages' => chat_messages_since($sid, $after, 300)]);
+}
+if ($r === 'chat_reply') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $sid = (int) ($b['sid'] ?? 0);
+    $body = trim((string) ($b['body'] ?? ''));
+    $sess = chat_session_by_id($sid);
+    if (!$sess || $body === '') jout(['ok' => false, 'error' => 'bad request']);
+    $id = chat_add_message($sid, 'agent', 'admin', $body);
+    jout(['ok' => (bool) $id, 'id' => $id]);
+}
+if ($r === 'chat_delete') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $sid = (int) ($b['sid'] ?? 0);
+    jout(['ok' => $sid > 0 && chat_session_delete($sid)]);
+}
+if (in_array($r, ['chat_check', 'chat_setwh', 'chat_delwh', 'chat_whinfo'], true)) {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    if ($r === 'chat_check') { $tok = trim((string) ($b['token'] ?? '')); jout(chat_tg_check($tok !== '' ? $tok : null)); }
+    if ($r === 'chat_setwh') { [$ok, , $err] = chat_tg_set_webhook(chat_tg_webhook_url()); jout(['ok' => $ok, 'error' => $err, 'url' => chat_tg_webhook_url()]); }
+    if ($r === 'chat_delwh') { [$ok, , $err] = chat_tg_delete_webhook(); jout(['ok' => $ok, 'error' => $err]); }
+    if ($r === 'chat_whinfo') { jout(chat_tg_webhook_info()); }
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт

@@ -39,6 +39,9 @@ import { Overrides } from './Overrides';
 import { Addsub } from './Addsub';
 import { ExtImport } from './ExtImport';
 import { Clod } from './Clod';
+import { Chat } from './Chat';
+import { Update } from './Update';
+import { Migrate } from './Migrate';
 
 export interface TabDef {
   id: string;
@@ -60,7 +63,7 @@ export const NAV: NavSection[] = [
     label: 'Главное',
     items: [
       { id: 'users', label: 'Пользователи', icon: IconUsers, component: Users },
-      { id: 'chat', label: 'Чат поддержки', icon: IconMessageCircle },
+      { id: 'chat', label: 'Чат поддержки', icon: IconMessageCircle, component: Chat },
       { id: 'reqlog', label: 'Лог запросов', icon: IconListDetails, component: ReqLog },
     ],
   },
@@ -103,8 +106,8 @@ export const NAV: NavSection[] = [
     label: 'Обслуживание',
     items: [
       { id: 'sysinfo', label: 'О системе', icon: IconServer, component: Sysinfo },
-      { id: 'update', label: 'Обновление', icon: IconRefresh },
-      { id: 'migrate', label: 'База данных', icon: IconDatabase },
+      { id: 'update', label: 'Обновление', icon: IconRefresh, component: Update },
+      { id: 'migrate', label: 'База данных', icon: IconDatabase, component: Migrate },
     ],
   },
 ];
