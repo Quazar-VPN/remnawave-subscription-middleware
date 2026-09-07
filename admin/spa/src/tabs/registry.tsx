@@ -42,6 +42,8 @@ import { Clod } from './Clod';
 import { Chat } from './Chat';
 import { Update } from './Update';
 import { Migrate } from './Migrate';
+import { SquadConfigs } from './SquadConfigs';
+import { WgPool } from './WgPool';
 
 export interface TabDef {
   id: string;
@@ -95,8 +97,8 @@ export const NAV: NavSection[] = [
       { id: 'rules', label: 'Правила ответа', icon: IconRoute, component: Rules },
       { id: 'hwid', label: 'HWID', icon: IconFingerprint, component: Hwid },
       { id: 'overrides', label: 'Оверрайды', icon: IconArrowsExchange, component: Overrides },
-      { id: 'squad_configs', label: 'Доп. конфиги', icon: IconFilePlus },
-      { id: 'wg_pool', label: 'WG / AWG', icon: IconTopologyStar3 },
+      { id: 'squad_configs', label: 'Доп. конфиги', icon: IconFilePlus, component: SquadConfigs },
+      { id: 'wg_pool', label: 'WG / AWG', icon: IconTopologyStar3, component: WgPool },
       { id: 'ext_import', label: 'Импорт из подписок', icon: IconDownload, component: ExtImport },
       { id: 'addsub', label: 'Слияние подписок', icon: IconGitMerge, component: Addsub },
       { id: 'clod', label: 'Защищённый канал', icon: IconShieldLock, component: Clod },

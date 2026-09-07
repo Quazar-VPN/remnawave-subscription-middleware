@@ -1003,6 +1003,176 @@ if (in_array($r, ['chat_check', 'chat_setwh', 'chat_delwh', 'chat_whinfo'], true
     if ($r === 'chat_whinfo') { jout(chat_tg_webhook_info()); }
 }
 
+// --- Доп. конфиги (squad_configs) и WG/AWG-пул (wg_pool) --------------------
+if ($r === 'squad_configs' || $r === 'wg_pool') {
+    $squads = []; $err = '';
+    if (remnawave_url() !== '' && remnawave_token() !== '') $squads = remnawave_internal_squads($err);
+    $names = [];
+    foreach ($squads as $sq) $names[$sq['uuid']] = $sq['name'];
+    $names['__manual__'] = 'Ручная привязка';
+
+    $wgTypes = ['wireguard', 'amneziawg'];
+    $simple = []; $wg = [];
+    foreach (squadconf_all() as $c) {
+        $type = (string) ($c['type'] ?? '');
+        $sqIds = squadconf_squads_of($c);
+        $parsed = squadconf_parse_any((string) ($c['raw'] ?? ''));
+        $row = [
+            'id'          => (int) $c['id'],
+            'name'        => (string) ($c['name'] ?? ''),
+            'type'        => $type,
+            'squad_uuids' => $sqIds,
+            'squad_names' => array_map(fn($u) => $names[$u] ?? $u, $sqIds),
+            'grp'         => (string) ($c['grp'] ?? ''),
+            'enabled'     => (int) ($c['enabled'] ?? 0) === 1,
+            'position'    => squadconf_position_of($c),
+            'xray_tpl'    => squadconf_tpl_of($c),
+            'summary'     => squadconf_summary($parsed),
+            'raw'         => (string) ($c['raw'] ?? ''),
+        ];
+        if (in_array($type, $wgTypes, true)) $wg[] = $row; else $simple[] = $row;
+    }
+    $sqOut = array_map(fn($sq) => ['uuid' => $sq['uuid'], 'name' => $sq['name'], 'members' => (int) ($sq['members'] ?? 0)], $squads);
+
+    if ($r === 'squad_configs') {
+        $tpls = []; $te = '';
+        if (remnawave_url() !== '' && remnawave_token() !== '') {
+            foreach (remnawave_sub_templates($te) as $t) if (($t['type'] ?? '') === 'XRAY_JSON') $tpls[] = ['name' => (string) ($t['name'] ?? '')];
+        }
+        jout(['ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $simple, 'api_err' => $err, 'xray_tpls' => $tpls, 'xray_tpl_name' => (string) setting('squad_xray_tpl_name', '')]);
+    }
+
+    // wg_pool: пул, аренды, режимы, сток/своб.
+    $leases = wglease_list();
+    $leaseByCfg = [];
+    foreach ($leases as $l) $leaseByCfg[(int) $l['config_id']] = $l;
+    $modes = []; $stock = []; $free = [];
+    foreach ($squads as $sq) $modes[$sq['uuid']] = wglease_mode($sq['uuid']);
+    foreach ($wg as $c) {
+        if (!$c['enabled']) continue;
+        $leased = isset($leaseByCfg[$c['id']]);
+        foreach ($c['squad_uuids'] as $u) {
+            $stock[$u] = ($stock[$u] ?? 0) + 1;
+            if (!$leased) $free[$u] = ($free[$u] ?? 0) + 1;
+        }
+    }
+    jout([
+        'ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $wg, 'api_err' => $err,
+        'leases' => $leases, 'modes' => $modes, 'stock' => $stock, 'free' => $free,
+        'reclaim_days' => wglease_reclaim_days(), 'dupes' => wglease_dupes(),
+    ]);
+}
+
+// Единое сохранение конфига (add при пустом id, update иначе).
+if ($r === 'sqcfg_save') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $id     = (int) ($b['id'] ?? 0);
+    $squads = array_values(array_filter(array_map('strval', (array) ($b['squads'] ?? [])), fn($s) => trim($s) !== ''));
+    $raw    = (string) ($b['raw'] ?? '');
+    $name   = trim((string) ($b['name'] ?? ''));
+    $grp    = trim((string) ($b['grp'] ?? ''));
+    $kind   = ($b['kind'] ?? 'simple') === 'wg' ? 'wg' : 'simple';
+    $pos    = (string) ($b['position'] ?? 'end');
+    if ($pos !== 'end' && $pos !== 'start' && strpos($pos, 'before:') !== 0 && strpos($pos, 'after:') !== 0) $pos = 'end';
+    $xrayTpl = trim((string) ($b['xray_tpl'] ?? ''));
+
+    // Оверрайды: JSON-поля валидируем, serverDescription — строка.
+    $ov = []; $ovIn = is_array($b['overrides'] ?? null) ? $b['overrides'] : [];
+    foreach (['sockopt', 'xhttpExtra', 'mux', 'finalMask'] as $k) {
+        $s = trim((string) ($ovIn[$k] ?? ''));
+        if ($s === '') continue;
+        $dec = json_decode($s, true);
+        if (json_last_error() !== JSON_ERROR_NONE) jout(['ok' => false, 'error' => 'Неверный JSON в поле «' . $k . '»']);
+        if (is_array($dec) && $dec) $ov[$k] = $dec;
+    }
+    $sd = trim((string) ($ovIn['serverDescription'] ?? ''));
+    if ($sd !== '') $ov['serverDescription'] = $sd;
+    $overrides = $ov ? json_encode($ov, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '';
+
+    if (!$squads || $name === '' || trim($raw) === '') jout(['ok' => false, 'error' => 'Выберите сквад, метку и вставьте конфиг']);
+    $parsed = squadconf_parse_any($raw);
+    if (empty($parsed['ok'])) jout(['ok' => false, 'error' => 'Конфиг не распознан: ' . (implode(' ', $parsed['warnings'] ?? []) ?: 'неизвестный формат')]);
+    $isWg = in_array($parsed['type'] ?? '', ['wireguard', 'amneziawg'], true);
+    if ($kind === 'wg' && !$isWg) jout(['ok' => false, 'error' => 'Это не WG/AWG']);
+    if ($kind === 'simple' && $isWg) jout(['ok' => false, 'error' => 'Это WG/AWG — используйте вкладку WG/AWG']);
+    $pj = json_encode($parsed, JSON_UNESCAPED_UNICODE);
+    if ($id > 0) squadconf_update($id, $squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides);
+    else squadconf_add($squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides);
+    jout(['ok' => true, 'msg' => ($id > 0 ? 'Конфиг обновлён (' : 'Конфиг добавлен (') . squadconf_summary($parsed) . ')']);
+}
+if ($r === 'sqcfg_parse') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $parsed = squadconf_parse_any((string) ($b['raw'] ?? ''));
+    jout(['ok' => !empty($parsed['ok']), 'type' => $parsed['type'] ?? '', 'summary' => squadconf_summary($parsed), 'warnings' => $parsed['warnings'] ?? []]);
+}
+if ($r === 'sqcfg_delete') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    foreach ((array) ($b['ids'] ?? [$b['id'] ?? 0]) as $id) { $id = (int) $id; if ($id) squadconf_delete($id); }
+    jout(['ok' => true, 'msg' => 'Удалено']);
+}
+if ($r === 'sqcfg_toggle') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    squadconf_toggle((int) ($b['id'] ?? 0), !empty($b['enabled']));
+    jout(['ok' => true]);
+}
+if ($r === 'sqcfg_group') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $ids = array_values(array_filter(array_map('intval', (array) ($b['ids'] ?? [])), fn($i) => $i > 0));
+    $n = $ids ? squadconf_set_group($ids, trim((string) ($b['grp'] ?? ''))) : 0;
+    jout(['ok' => true, 'msg' => 'Группа обновлена: ' . $n]);
+}
+if ($r === 'save_sqcfg_settings') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('squad_xray_tpl_name', mb_substr(trim((string) ($b['squad_xray_tpl_name'] ?? '')), 0, 120));
+    if (function_exists('squadconf_xray_tpl_drop')) squadconf_xray_tpl_drop();
+    jout(['ok' => true, 'msg' => 'Глобальный xray-шаблон сохранён']);
+}
+if ($r === 'save_pool_modes') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    foreach ((array) ($b['modes'] ?? []) as $sq => $m) {
+        $old = wglease_mode((string) $sq);
+        wglease_set_mode((string) $sq, (string) $m);
+        if (wglease_mode((string) $sq) !== $old) wglease_clear_pool_auto((string) $sq);
+    }
+    set_setting('wgpool_reclaim_days', (string) max(1, (int) ($b['reclaim_days'] ?? 14)));
+    jout(['ok' => true, 'msg' => 'Режимы пула сохранены']);
+}
+if ($r === 'pool_reset_leases') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $n = wglease_reset_auto();
+    jout(['ok' => true, 'msg' => 'Сброшено авто-выдач: ' . $n]);
+}
+if ($r === 'pool_free_slot') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $n = wglease_free((int) ($b['id'] ?? 0));
+    jout(['ok' => (bool) $n, 'msg' => $n ? 'Слот освобождён' : 'Слот уже свободен']);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт
