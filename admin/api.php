@@ -180,7 +180,131 @@ if ($r === 'reqlog_nolog') {
     jout(['ok' => true, 'nolog' => $on]);
 }
 
+// «Пользователи» — список из панели, уже обогащённый (статус/грейс/источник/
+// ссылка через зеркало/nolog/доп-подписка), теми же helper'ами, что и легаси-таб.
+if ($r === 'users') {
+    jout(users_payload());
+}
+
+// Устройства пользователя (HWID) — модалка. uuid = uuid|id (rw_ref_coerce внутри).
+if ($r === 'user_devices') {
+    $uuid = (string) ($_GET['uuid'] ?? '');
+    $err = '';
+    $devices = $uuid !== '' ? remnawave_user_hwids($uuid, $err) : [];
+    $blocked = [];
+    if ($p = db()) {
+        foreach ($p->query("SELECT match_value FROM overrides WHERE match_type='hwid' AND reason='blocked'") as $o) {
+            $blocked[] = mb_strtolower((string) $o['match_value']);
+        }
+    }
+    jout(['ok' => $err === '', 'error' => $err, 'devices' => $devices, 'blocked_hwids' => $blocked]);
+}
+
+if ($r === 'user_hwid_delete') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    [$ok, , , $e] = remnawave_delete_hwid((string) ($b['uuid'] ?? ''), (string) ($b['hwid'] ?? ''));
+    jout(['ok' => $ok, 'error' => $e]);
+}
+
+if ($r === 'user_hwid_block') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $hwid  = trim((string) ($b['hwid'] ?? ''));
+    $uname = trim((string) ($b['username'] ?? ''));
+    if ($hwid === '') jout(['ok' => false, 'error' => 'empty hwid']);
+    if (!empty($b['block'])) {
+        upsert_override('hwid', $hwid, 'blocked', 'manual', $uname !== '' ? $uname : null, 'HWID-бан из «Устройств»');
+    } else {
+        delete_override('hwid', $hwid);
+    }
+    jout(['ok' => true]);
+}
+
+if ($r === 'addsub_map') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $su  = trim((string) ($b['short'] ?? ''));
+    $url = trim((string) ($b['url'] ?? ''));
+    if ($su === '' || $url === '') jout(['ok' => false, 'error' => 'empty']);
+    if (!preg_match('~^https?://~i', $url)) jout(['ok' => false, 'error' => 'URL должен начинаться с http:// или https://']);
+    jout(['ok' => (bool) addsub_map_set($su, $url)]);
+}
+
+if ($r === 'addsub_map_del') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $su = trim((string) ($b['short'] ?? ''));
+    if ($su === '') jout(['ok' => false, 'error' => 'empty']);
+    jout(['ok' => (bool) addsub_map_del($su)]);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
+
+// Сборка списка пользователей с теми же вычислениями, что делает контроллер
+// легаси-таба перед tab_users.php (статус/грейс/источник/ссылка/nolog/доп).
+function users_payload(): array {
+    $err = '';
+    $users  = remnawave_all_users($err);
+    $nolog  = nolog_shortuuids();
+    $addsub = [];
+    foreach (addsub_map_all() as $row) $addsub[(string) $row['main_short']] = (string) $row['add_url'];
+
+    $ov_index = [];
+    $blocked_users = [];
+    $blocked_hwids = [];
+    if ($p = db()) {
+        foreach ($p->query('SELECT * FROM overrides ORDER BY updated_at DESC LIMIT 500') as $o) {
+            $mt = (string) ($o['match_type'] ?? '');
+            if ($mt === 'shortuuid') $ov_index[(string) $o['match_value']] = $o;
+            if ($mt === 'hwid' && ($o['reason'] ?? '') === 'blocked') {
+                $blocked_hwids[] = mb_strtolower((string) $o['match_value']);
+                $bn = mb_strtolower(trim((string) ($o['username'] ?? '')));
+                if ($bn !== '') $blocked_users[$bn] = true;
+            }
+        }
+    }
+
+    $mirror   = mirror_domain();
+    $pfx      = sub_link_prefix() ? sub_prefix_seg() : (sub_link_apisub() ? 'api/sub/' : '');
+    $grace_sq = grace_squad_uuid();
+
+    $out = [];
+    foreach ($users as $u) {
+        $un = (string) ($u['username'] ?? '');
+        $st = (string) ($u['status'] ?? '');
+        $su = (string) ($u['shortUuid'] ?? '');
+        $uref = rw_user_ref($u);
+        $uuid = rw_ref_ok($uref) ? (string) $uref['val'] : '';
+        $lim  = (isset($u['hwidDeviceLimit']) && $u['hwidDeviceLimit'] !== null && $u['hwidDeviceLimit'] !== '') ? (int) $u['hwidDeviceLimit'] : null;
+        $exp  = !empty($u['expireAt']) ? strtotime((string) $u['expireAt']) : false;
+        $ovr  = (string) ($ov_index[$su]['reason'] ?? '');
+        $in_grace = ($grace_sq !== '' && $st === 'ACTIVE' && in_array($grace_sq, grace_squads_from_user($u), true));
+        $out[] = [
+            'username'       => $un,
+            'status'         => $st,
+            'short_uuid'     => $su,
+            'uuid'           => $uuid,
+            'limit'          => $lim,
+            'expire_ts'      => $exp !== false ? (int) $exp : null,
+            'sub_link'       => ($mirror !== '' && $su !== '') ? ('https://' . $mirror . '/' . $pfx . $su) : '',
+            'src'            => $ovr === 'blocked' ? 'mw' : 'panel',
+            'in_grace'       => $in_grace,
+            'has_hwid_block' => ($un !== '' && isset($blocked_users[mb_strtolower($un)])),
+            'nolog'          => ($su !== '' && isset($nolog[$su])),
+            'addsub'         => (string) ($addsub[$su] ?? ''),
+        ];
+    }
+    return ['ok' => true, 'error' => $err, 'mirror' => $mirror, 'count' => count($out), 'blocked_hwids' => $blocked_hwids, 'users' => $out];
+}
 
 // Сериализация строк лога в JSON. Повторяет входные данные reqlog_render_rows,
 // но отдаёт структуру, а не HTML — разметку строит React.
