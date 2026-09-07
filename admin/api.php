@@ -247,6 +247,132 @@ if ($r === 'addsub_map_del') {
     jout(['ok' => (bool) addsub_map_del($su)]);
 }
 
+// --- Настройки: «Подключение» -----------------------------------------------
+if ($r === 'connection') {
+    $psd = '';
+    try { if (function_exists('panel_sub_public_domain')) $psd = (string) panel_sub_public_domain(); } catch (Throwable $e) {}
+    jout([
+        'ok'                 => true,
+        'in_docker'          => submw_in_docker(),
+        'target_domain'      => target_domain(),
+        'mirror_domain'      => mirror_domain(),
+        'remnawave_url'      => remnawave_url(),
+        'remnawave_cookie'   => remnawave_cookie(),
+        'remnawave_xapikey'  => remnawave_xapikey(),
+        'api_key_set'        => remnawave_token() !== '',
+        'webhook_secret_set' => webhook_secret() !== '',
+        'proxy_timeout'      => proxy_timeout(),
+        'trust_header_expire'=> trust_header_expire(),
+        'tls_verify'         => api_tls_verify(),
+        'sub_source'         => sub_source(),
+        'subpage_external_url' => subpage_external_url(),
+        'sub_link_apisub'    => sub_link_apisub(),
+        'sub_prefix_enabled' => setting('sub_prefix_enabled', '0') === '1',
+        'sub_prefix'         => (string) setting('sub_prefix', ''),
+        'sub_link_prefix'    => setting('sub_link_prefix', '0') === '1',
+        'mask_notfound'      => mask_notfound(),
+        'ua_hwid_parse'      => ua_hwid_parse(),
+        'ua_hwid_keys'       => array_values(ua_hwid_keys()),
+        'ua_hwid_keys_all'   => array_values(ua_hwid_keys_all()),
+        'panel_sub_domain'   => $psd,
+    ]);
+}
+
+if ($r === 'save_connection') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $s = fn($k) => trim((string) ($b[$k] ?? ''));
+    $bool = fn($k) => !empty($b[$k]) ? '1' : '0';
+
+    set_setting('target_domain', $s('target_domain'));
+    set_setting('mirror_domain', $s('mirror_domain'));
+    set_setting('remnawave_url', rtrim($s('remnawave_url'), '/'));
+    set_setting('remnawave_cookie', $s('remnawave_cookie'));
+    set_setting('remnawave_xapikey', $s('remnawave_xapikey'));
+    if ($s('remnawave_api_key') !== '') set_setting('remnawave_api_key', $s('remnawave_api_key'));
+    if ($s('webhook_secret') !== '')    set_setting('webhook_secret', $s('webhook_secret'));
+    set_setting('trust_header_expire', $bool('trust_header_expire'));
+    set_setting('tls_verify', $bool('tls_verify'));
+    set_setting('proxy_timeout', (string) max(5, (int) ($b['proxy_timeout'] ?? 30)));
+    set_setting('sub_source', ($b['sub_source'] ?? 'mirror') === 'panel' ? 'panel' : 'mirror');
+    set_setting('subpage_external_url', rtrim($s('subpage_external_url'), '/'));
+    set_setting('mask_notfound', $bool('mask_notfound'));
+    set_setting('sub_link_apisub', $bool('sub_link_apisub'));
+    set_setting('sub_prefix_enabled', $bool('sub_prefix_enabled'));
+    set_setting('sub_prefix', trim($s('sub_prefix'), "/ \t\r\n"));
+    set_setting('sub_link_prefix', $bool('sub_link_prefix'));
+    set_setting('ua_hwid_parse', $bool('ua_hwid_parse'));
+    $ua_keys = [];
+    foreach ((array) ($b['ua_hwid_keys'] ?? []) as $uk) {
+        $uk = strtolower(trim((string) $uk));
+        if (in_array($uk, ua_hwid_keys_all(), true) && !in_array($uk, $ua_keys, true)) $ua_keys[] = $uk;
+    }
+    set_setting('ua_hwid_keys', json_encode($ua_keys ?: ['x-hwid'], JSON_UNESCAPED_SLASHES));
+    jout(['ok' => true, 'msg' => 'Настройки подключения сохранены']);
+}
+
+// --- Настройки: «Брендинг» + страница-заглушка ------------------------------
+if ($r === 'branding') {
+    $brand = function_exists('service_brand') ? service_brand() : ['name' => '', 'logo_file' => '', 'emoji' => ''];
+    $bc = json_decode((string) setting('brand_cache', '{}'), true);
+    if (!is_array($bc)) $bc = [];
+    jout([
+        'ok'               => true,
+        'service_name'     => (string) setting('service_name', ''),
+        'service_logo_url' => (string) setting('service_logo_url', ''),
+        'brand_name'       => (string) ($brand['name'] ?? ''),
+        'brand_logo_file'  => (string) ($brand['logo_file'] ?? ''),
+        'brand_emoji'      => (string) ($brand['emoji'] ?? ''),
+        'cache_name'       => (string) ($bc['name'] ?? ''),
+        'cache_logo_url'   => (string) ($bc['logo_url'] ?? ''),
+        'cache_logo_file'  => (string) ($bc['logo_file'] ?? ''),
+        'cache_api_error'  => (string) ($bc['api_error'] ?? ''),
+        'landing_preset'   => landing_preset(),
+        'landing_fp'       => landing_fp(),
+        'landing_fp_ack'   => setting('landing_fp_ack', '') === '1',
+        'chat_enabled'     => chat_enabled(),
+    ]);
+}
+
+if ($r === 'save_branding') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('service_name', trim((string) ($b['service_name'] ?? '')));
+    set_setting('service_logo_url', trim((string) ($b['service_logo_url'] ?? '')));
+    $be = '';
+    brand_refresh($be);
+    jout(['ok' => true, 'msg' => $be !== '' ? ('Брендинг сохранён. API панели: ' . $be) : 'Брендинг сохранён и обновлён']);
+}
+
+if ($r === 'save_landing') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $lp = (int) ($b['landing_preset'] ?? 1);
+    set_setting('landing_preset', (string) (($lp >= 1 && $lp <= 4) ? $lp : 1));
+    jout(['ok' => true, 'msg' => 'Дизайн страницы-заглушки сохранён']);
+}
+
+if ($r === 'landing_regen_fp') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    landing_fp_regenerate();
+    set_setting('landing_fp_ack', '1');
+    jout(['ok' => true, 'fp' => landing_fp()]);
+}
+
+if ($r === 'landing_ack_fp') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    set_setting('landing_fp_ack', '1');
+    jout(['ok' => true]);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Сборка списка пользователей с теми же вычислениями, что делает контроллер
