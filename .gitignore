@@ -5,3 +5,12 @@ backups/
 *.log
 .DS_Store
 Thumbs.db
+
+# React+Mantine SPA (admin/spa) — сборка и зависимости
+admin/spa/node_modules/
+admin/spa/dist/
+# admin/app — артефакт сборки SPA, генерируется в Docker (COPY --from=spa)
+admin/app/
+
+# TS incremental build info
+admin/spa/*.tsbuildinfo

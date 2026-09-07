@@ -1,0 +1,34 @@
+/* Onest — переиспользуем шрифт легаси-админки (nginx отдаёт /admin/assets/*). */
+@font-face {
+  font-family: 'Onest';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/admin/assets/fonts/onest-cyrillic.woff2') format('woff2');
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Onest';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/admin/assets/fonts/onest-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+2122, U+2212;
+}
+
+/* OLED-тема: Mantine знает только light/dark, поэтому «чёрную» реализуем как
+   dark + data-oled — чистый чёрный фон, как в легаси html[data-theme="black"]. */
+:root[data-oled='1'][data-mantine-color-scheme='dark'] {
+  --mantine-color-body: #000000;
+  --mantine-color-default: #0b0f18;
+}
+:root[data-oled='1'][data-mantine-color-scheme='dark'] .mantine-AppShell-navbar,
+:root[data-oled='1'][data-mantine-color-scheme='dark'] .mantine-AppShell-header {
+  background: #05070c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
