@@ -53,7 +53,7 @@ export function App() {
           <Text fw={600}>Прослойка ещё не установлена</Text>
           <Text c="dimmed" size="sm" ta="center">
             Пройдите первичную настройку в мастере{' '}
-            <a href="/admin/">/admin/</a>, затем вернитесь сюда.
+            <a href="/admin/index.php">/admin/index.php</a>, затем вернитесь сюда.
           </Text>
         </Stack>
       </Center>

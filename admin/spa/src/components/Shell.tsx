@@ -1,11 +1,14 @@
+import { Suspense } from 'react';
 import {
   ActionIcon,
   AppShell,
   Badge,
   Box,
   Burger,
+  Center,
   Code,
   Group,
+  Loader,
   NavLink,
   ScrollArea,
   Stack,
@@ -126,7 +129,9 @@ export function Shell({
 
       <AppShell.Main>
         {Component ? (
-          <Component />
+          <Suspense fallback={<Center h={240}><Loader color="teal" /></Center>}>
+            <Component />
+          </Suspense>
         ) : (
           <Text c="dimmed">
             Этот раздел ещё не перенесён в новую панель.{' '}

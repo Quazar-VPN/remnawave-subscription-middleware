@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react';
+import { lazy, type ComponentType } from 'react';
 import {
   IconUsers,
   IconMessageCircle,
@@ -23,27 +23,28 @@ import {
   IconDatabase,
   type IconProps,
 } from '@tabler/icons-react';
-import { Sysinfo } from './Sysinfo';
-import { ReqLog } from './ReqLog';
-import { Users } from './Users';
-import { Connection } from './Connection';
-import { Branding } from './Branding';
-import { Webhooks } from './Webhooks';
-import { Whlog } from './Whlog';
-import { Fwdlog } from './Fwdlog';
-import { Subst } from './Subst';
-import { GraceUsers } from './GraceUsers';
-import { Rules } from './Rules';
-import { Hwid } from './Hwid';
-import { Overrides } from './Overrides';
-import { Addsub } from './Addsub';
-import { ExtImport } from './ExtImport';
-import { Clod } from './Clod';
-import { Chat } from './Chat';
-import { Update } from './Update';
-import { Migrate } from './Migrate';
-import { SquadConfigs } from './SquadConfigs';
-import { WgPool } from './WgPool';
+// Ленивая загрузка: каждый таб — отдельный чанк, тянется только при открытии.
+const Sysinfo = lazy(() => import('./Sysinfo').then((m) => ({ default: m.Sysinfo })));
+const ReqLog = lazy(() => import('./ReqLog').then((m) => ({ default: m.ReqLog })));
+const Users = lazy(() => import('./Users').then((m) => ({ default: m.Users })));
+const Connection = lazy(() => import('./Connection').then((m) => ({ default: m.Connection })));
+const Branding = lazy(() => import('./Branding').then((m) => ({ default: m.Branding })));
+const Webhooks = lazy(() => import('./Webhooks').then((m) => ({ default: m.Webhooks })));
+const Whlog = lazy(() => import('./Whlog').then((m) => ({ default: m.Whlog })));
+const Fwdlog = lazy(() => import('./Fwdlog').then((m) => ({ default: m.Fwdlog })));
+const Subst = lazy(() => import('./Subst').then((m) => ({ default: m.Subst })));
+const GraceUsers = lazy(() => import('./GraceUsers').then((m) => ({ default: m.GraceUsers })));
+const Rules = lazy(() => import('./Rules').then((m) => ({ default: m.Rules })));
+const Hwid = lazy(() => import('./Hwid').then((m) => ({ default: m.Hwid })));
+const Overrides = lazy(() => import('./Overrides').then((m) => ({ default: m.Overrides })));
+const Addsub = lazy(() => import('./Addsub').then((m) => ({ default: m.Addsub })));
+const ExtImport = lazy(() => import('./ExtImport').then((m) => ({ default: m.ExtImport })));
+const Clod = lazy(() => import('./Clod').then((m) => ({ default: m.Clod })));
+const Chat = lazy(() => import('./Chat').then((m) => ({ default: m.Chat })));
+const Update = lazy(() => import('./Update').then((m) => ({ default: m.Update })));
+const Migrate = lazy(() => import('./Migrate').then((m) => ({ default: m.Migrate })));
+const SquadConfigs = lazy(() => import('./SquadConfigs').then((m) => ({ default: m.SquadConfigs })));
+const WgPool = lazy(() => import('./WgPool').then((m) => ({ default: m.WgPool })));
 
 export interface TabDef {
   id: string;

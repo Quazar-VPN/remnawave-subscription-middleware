@@ -12,6 +12,18 @@ export default defineConfig({
     // готовые ассеты одним слоем прямо в корень раздачи.
     outDir: '../app',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        // Вендоры — отдельными чанками: react/mantine кэшируются между
+        // релизами, тяжёлый recharts (только для «О системе») грузится сам по себе.
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          mantine: ['@mantine/core', '@mantine/hooks', '@mantine/notifications'],
+          charts: ['@mantine/charts', 'recharts'],
+        },
+      },
+    },
   },
   server: {
     // Локальная разработка: проксируем API на запущенный контейнер/php.
