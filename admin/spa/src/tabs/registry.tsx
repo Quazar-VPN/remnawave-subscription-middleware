@@ -37,6 +37,8 @@ import { Rules } from './Rules';
 import { Hwid } from './Hwid';
 import { Overrides } from './Overrides';
 import { Addsub } from './Addsub';
+import { ExtImport } from './ExtImport';
+import { Clod } from './Clod';
 
 export interface TabDef {
   id: string;
@@ -92,9 +94,9 @@ export const NAV: NavSection[] = [
       { id: 'overrides', label: 'Оверрайды', icon: IconArrowsExchange, component: Overrides },
       { id: 'squad_configs', label: 'Доп. конфиги', icon: IconFilePlus },
       { id: 'wg_pool', label: 'WG / AWG', icon: IconTopologyStar3 },
-      { id: 'ext_import', label: 'Импорт из подписок', icon: IconDownload },
+      { id: 'ext_import', label: 'Импорт из подписок', icon: IconDownload, component: ExtImport },
       { id: 'addsub', label: 'Слияние подписок', icon: IconGitMerge, component: Addsub },
-      { id: 'clod', label: 'Защищённый канал', icon: IconShieldLock },
+      { id: 'clod', label: 'Защищённый канал', icon: IconShieldLock, component: Clod },
     ],
   },
   {

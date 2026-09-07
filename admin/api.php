@@ -659,6 +659,140 @@ if ($r === 'save_addsub') {
     jout(['ok' => true, 'msg' => 'Настройки слияния подписок сохранены']);
 }
 
+// --- Защищённый канал (clod) ------------------------------------------------
+if ($r === 'clod') {
+    $ok  = chan_ext_ok();
+    $dbg = chan_debug_on() ? chan_debug_list(chan_debug_keep()) : [];
+    jout([
+        'ok'             => true,
+        'ext_ok'         => $ok,
+        'fingerprint'    => $ok ? chan_fingerprint() : '',
+        'index'          => chan_index_info(),
+        'stats'          => chan_stats(),
+        'rows'           => chan_state_list(500),
+        'short_len'      => function_exists('panel_short_uuid_len') ? (int) panel_short_uuid_len() : 0,
+        'api_ok'         => remnawave_url() !== '' && remnawave_token() !== '',
+        'php'            => PHP_VERSION . ' · ' . PHP_SAPI,
+        'apps'           => chan_client_apps(),
+        'settings'       => [
+            'chan_enabled'      => setting('chan_enabled', '0') === '1',
+            'chan_pad'          => setting('chan_pad', '1') === '1',
+            'chan_hard_default' => setting('chan_hard_default', '0') === '1',
+            'chan_page_404'     => setting('chan_page_404', '0') === '1',
+            'chan_hard_remarks' => implode("\n", chan_hard_remarks()),
+        ],
+        'debug_on'       => chan_debug_on(),
+        'debug_keep'     => chan_debug_keep(),
+        'debug'          => $dbg,
+    ]);
+}
+if ($r === 'save_clod') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('chan_enabled', !empty($b['chan_enabled']) ? '1' : '0');
+    set_setting('chan_pad', !empty($b['chan_pad']) ? '1' : '0');
+    set_setting('chan_hard_default', !empty($b['chan_hard_default']) ? '1' : '0');
+    set_setting('chan_page_404', !empty($b['chan_page_404']) ? '1' : '0');
+    $lines = array_values(array_filter(array_map('trim', explode("\n", str_replace("\r", '', (string) ($b['chan_hard_remarks'] ?? '')))), fn($s) => $s !== ''));
+    set_setting('chan_hard_remarks', json_encode($lines, JSON_UNESCAPED_UNICODE));
+    jout(['ok' => true, 'msg' => 'Настройки защищённого канала сохранены']);
+}
+if ($r === 'save_clod_debug') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('chan_debug', !empty($b['chan_debug']) ? '1' : '0');
+    set_setting('chan_debug_keep', (string) max(5, min(500, (int) ($b['chan_debug_keep'] ?? 50))));
+    jout(['ok' => true, 'msg' => !empty($b['chan_debug']) ? 'Журнал включён' : 'Журнал выключен']);
+}
+if ($r === 'clod_debug_clear') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    chan_debug_clear();
+    jout(['ok' => true, 'msg' => 'Журнал очищен']);
+}
+if ($r === 'clod_rotate') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $done = chan_rotate();
+    jout(['ok' => $done, 'msg' => $done ? ('Ключ сменён, отпечаток: ' . chan_fingerprint()) : 'Сменить ключ не удалось', 'fingerprint' => chan_fingerprint()]);
+}
+if ($r === 'clod_reindex') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $done = chan_index_rebuild(true);
+    $ci = chan_index_info();
+    jout(['ok' => $done, 'msg' => $done ? ('Индекс пересобран: ' . (int) $ci['count'] . ' подписок') : 'Не удалось пересобрать', 'index' => $ci]);
+}
+if ($r === 'clod_hard') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    chan_hard_set((string) ($b['short'] ?? ''), !empty($b['on']));
+    jout(['ok' => true]);
+}
+
+// --- Импорт из подписок (ext_import) ----------------------------------------
+if ($r === 'ext_import') {
+    $sq = []; $e = '';
+    if (remnawave_url() !== '' && remnawave_token() !== '') $sq = remnawave_internal_squads($e);
+    jout(['ok' => true, 'sources' => extsub_all(), 'ua_options' => extsub_ua_options(), 'squads' => $sq]);
+}
+if ($r === 'ext_hosts') {
+    $e = '';
+    $hosts = extsub_fetch_hosts((int) ($_GET['id'] ?? 0), $e);
+    jout(['ok' => $e === '', 'error' => $e, 'hosts' => $hosts]);
+}
+if ($r === 'ext_diff') {
+    $e = '';
+    $diff = extsub_diff((int) ($_GET['id'] ?? 0), $e);
+    jout(['ok' => $e === '', 'error' => $e, 'diff' => $diff]);
+}
+if ($r === 'extsub_add') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $name = trim((string) ($b['name'] ?? ''));
+    $url  = trim((string) ($b['url'] ?? ''));
+    $ua   = (string) ($b['ua'] ?? 'happ');
+    if ($name === '' || $url === '') jout(['ok' => false, 'error' => 'Укажите название и URL источника']);
+    jout(extsub_add($name, $url, $ua) ? ['ok' => true, 'msg' => 'Источник добавлен'] : ['ok' => false, 'error' => 'Не удалось добавить (проверьте URL http/https)']);
+}
+if ($r === 'extsub_del') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    extsub_delete((int) ($b['id'] ?? 0));
+    jout(['ok' => true, 'msg' => 'Источник удалён']);
+}
+if ($r === 'extsub_import') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $keys   = array_values(array_filter(array_map('strval', (array) ($b['keys'] ?? [])), fn($s) => trim($s) !== ''));
+    $squads = array_values(array_filter(array_map('strval', (array) ($b['squads'] ?? [])), fn($s) => trim($s) !== ''));
+    $pos    = ($b['position'] ?? 'end') === 'start' ? 'start' : 'end';
+    $e = '';
+    $n = extsub_import((int) ($b['id'] ?? 0), $keys, $squads, $pos, $e);
+    jout(['ok' => $e === '', 'error' => $e, 'msg' => $e === '' ? ('Импортировано: ' . $n) : $e, 'count' => $n]);
+}
+if ($r === 'extsub_resync') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    $e = '';
+    $n = extsub_resync((int) ($b['id'] ?? 0), $e);
+    jout(['ok' => $e === '', 'error' => $e, 'msg' => $e === '' ? ('Синхронизировано: ' . $n) : $e, 'count' => $n]);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт
