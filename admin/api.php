@@ -464,6 +464,81 @@ if ($r === 'clear_fwdlog') {
     jout(['ok' => true, 'msg' => 'Лог пересылки очищен']);
 }
 
+// --- Грейс-сквад: настройки -------------------------------------------------
+if ($r === 'grace') {
+    $ie = ''; $xe = '';
+    $internal = []; $external = [];
+    if (remnawave_url() !== '' && remnawave_token() !== '') {
+        $internal = remnawave_internal_squads($ie);
+        $external = remnawave_external_squads($xe);
+    }
+    jout([
+        'ok'                   => true,
+        'enabled'              => grace_squad_enabled(),
+        'squad_uuid'           => grace_squad_uuid(),
+        'days'                 => (string) setting('grace_days', ''),
+        'days_default'         => expired_grace_days(),
+        'traffic_gb'           => rtrim(rtrim(number_format(grace_traffic_bytes() / 1073741824, 2, '.', ''), '0'), '.'),
+        'hwid_limit'           => grace_hwid_limit_raw(),
+        'traffic_strategy'     => grace_traffic_strategy(),
+        'reset_traffic_exit'   => grace_reset_traffic_on_exit(),
+        'external_enabled'     => grace_external_enabled(),
+        'external_squad_uuid'  => grace_external_squad_uuid(),
+        'announce'             => str_replace('\n', "\n", grace_announce()),
+        'internal_squads'      => $internal,
+        'internal_err'         => $ie,
+        'external_squads'      => $external,
+        'external_err'         => $xe,
+    ]);
+}
+
+if ($r === 'save_grace') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $b = json_decode((string) file_get_contents('php://input'), true);
+    if (!is_array($b)) $b = [];
+    set_setting('grace_squad_enabled', !empty($b['enabled']) ? '1' : '0');
+    set_setting('grace_squad_uuid', trim((string) ($b['squad_uuid'] ?? '')));
+    $gb = (float) str_replace(',', '.', (string) ($b['traffic_gb'] ?? '0'));
+    set_setting('grace_traffic_bytes', (string) (int) round(max(0, $gb) * 1073741824));
+    $strat = (string) ($b['traffic_strategy'] ?? 'NO_RESET');
+    set_setting('grace_traffic_strategy', in_array($strat, ['NO_RESET', 'DAY', 'WEEK', 'MONTH', 'MONTH_ROLLING'], true) ? $strat : 'NO_RESET');
+    set_setting('grace_reset_traffic_exit', !empty($b['reset_traffic_exit']) ? '1' : '0');
+    $gh = trim((string) ($b['hwid_limit'] ?? ''));
+    set_setting('grace_hwid_limit', $gh === '' ? '' : (string) max(0, (int) $gh));
+    $gd = (string) ($b['days'] ?? '');
+    set_setting('grace_days', $gd === '' ? '' : (string) max(0, (int) $gd));
+    set_setting('grace_external_enabled', !empty($b['external_enabled']) ? '1' : '0');
+    set_setting('grace_external_squad_uuid', trim((string) ($b['external_squad_uuid'] ?? '')));
+    set_setting('grace_announce', grace_announce_normalize((string) ($b['announce'] ?? '')));
+    jout(['ok' => true, 'msg' => 'Настройки грейс-сквада сохранены']);
+}
+
+if ($r === 'grace_refresh_refs') {
+    if ($method !== 'POST') jout(['ok' => false, 'error' => 'method'], 405);
+    if (!api_csrf_ok())     jout(['ok' => false, 'error' => 'CSRF'], 400);
+    $res = grace_refresh_refs();
+    jout(['ok' => ($res['error'] ?? '') === '', 'result' => $res]);
+}
+
+if ($r === 'grace_users') {
+    $rows = [];
+    if ($p = db()) {
+        ensure_grace_table();
+        try {
+            foreach ($p->query('SELECT *, ' . sql_epoch('created_at') . ' AS created_epoch FROM grace_users ORDER BY grace_until DESC LIMIT 500') as $row) {
+                $rows[] = [
+                    'username'   => (string) ($row['username'] ?? ''),
+                    'short_uuid' => (string) ($row['short_uuid'] ?? ''),
+                    'created_ts' => (int) ($row['created_epoch'] ?? 0),
+                    'grace_until'=> (int) ($row['grace_until'] ?? 0),
+                ];
+            }
+        } catch (Throwable $e) {}
+    }
+    jout(['ok' => true, 'rows' => $rows]);
+}
+
 jout(['ok' => false, 'error' => 'unknown resource: ' . $r], 404);
 
 // Лог вебхуков: фильтры и выборка 1:1 с контроллером легаси (без CSV — экспорт
