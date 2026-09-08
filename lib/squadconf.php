@@ -1310,6 +1310,17 @@ function xray_tpl_make_balancer($el, array $members, $prefix = 'proxy') {
     foreach ($rules as $r) { if (is_object($r) && ($r->balancerTag ?? '') === $balTag) { $hasRule = true; break; } }
     if (!$hasRule) $rules[] = (object) ['type' => 'field', 'network' => 'tcp,udp', 'balancerTag' => $balTag];
     $el->routing->rules = $rules;
+    // Нормализация: balancerTag на НЕсуществующий балансер (в шаблоне панели встречается
+    // квирк, где outboundTag «direct» записан как balancerTag) → в outboundTag, иначе
+    // xray-core отвергнет конфиг («balancer not found»).
+    $defined = [];
+    foreach ($el->routing->balancers as $b) if (is_object($b) && isset($b->tag)) $defined[(string) $b->tag] = true;
+    foreach ($el->routing->rules as $r) {
+        if (is_object($r) && isset($r->balancerTag) && !isset($defined[(string) $r->balancerTag])) {
+            $r->outboundTag = (string) $r->balancerTag;
+            unset($r->balancerTag);
+        }
+    }
 }
 
 // Форк Quazar (R3): по тегу-балансеру найти в панели «дисплей-хост» — хост с этим
