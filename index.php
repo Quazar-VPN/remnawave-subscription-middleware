@@ -439,6 +439,26 @@ if ($decision === 'normal' && $short_uuid !== '' && !$junk_path && addsub_enable
                 $log_as['s'] = 'stub';
                 if (addsub_stub_on_traffic()) $response = addsub_inject_stub($response, $format, addsub_stub_label());
             } else {
+                // Вторую подписку (B) прослойка тянет напрямую из панели (self-url,
+                // addsub_rewrite_selfurl), минуя собственный конвейер, — поэтому
+                // вручную добавленные в сквад B доп-конфиги (squad_configs, напр.
+                // «Белые списки») в теле B отсутствуют: панель про них не знает.
+                // Досыпаем их здесь по shortUuid юзера B — ровно как сделала бы
+                // прослойка при прямом запросе B, — чтобы при слиянии B→A юзер
+                // получал и реальные хосты сквада B, и наши ручные хосты.
+                $as_src_short = (string) ($log_as['su'] ?? '');
+                if (squadconf_any() && $as_src_short !== '') {
+                    try {
+                        $b_squads = squadconf_user_squads($as_src_short);
+                        if ($b_squads) {
+                            $b_cfgs = wglease_select($as_src_short, $current_hwid, $b_squads, squadconf_supported_types($addsub_body, $format));
+                            if ($b_cfgs) {
+                                $addsub_body = squadconf_inject($addsub_body, $format, $b_cfgs);
+                                $log_as['bsc'] = count($b_cfgs);
+                            }
+                        }
+                    } catch (Throwable $e) { error_log('submw addsub squadconf B: ' . $e->getMessage()); }
+                }
                 $response = addsub_merge($response, $addsub_body, $format);
                 $log_as['s'] = 'on';
                 $log_as['n'] = reqlog_addsub_count($addsub_body, $format);

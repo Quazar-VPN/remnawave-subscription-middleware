@@ -290,7 +290,6 @@ function landing_render() {
 </div>
 <?php endif; ?>
 <?php landing_login_script(); ?>
-<?php chat_widget_render(); ?>
 </body>
 </html>
 <?php
