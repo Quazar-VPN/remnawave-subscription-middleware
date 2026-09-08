@@ -157,6 +157,7 @@ function squadconf_apply_overrides($parsed, $ov) {
 function squadconf_plan_order(array $existing_names, array $candidates) {
     $norm = array_map('squadconf_name_norm', $existing_names);
     $n = count($existing_names);
+    // Поиск якоря среди УЖЕ присутствующих в подписке имён (панельные хосты).
     $find = function ($anchor) use ($norm) {
         $a = squadconf_name_norm($anchor);
         if ($a === '') return -1;
@@ -164,25 +165,57 @@ function squadconf_plan_order(array $existing_names, array $candidates) {
         foreach ($norm as $i => $x) if ($x !== '' && strpos($x, $a) !== false) return $i; // по подстроке (терпимо к флагам/суффиксам)
         return -1;
     };
-    $items = [];
-    foreach ($existing_names as $i => $nm) $items[] = ['key' => (float) $i, 'kind' => 'existing', 'orig' => $i];
+    // Имена самих кандидатов (добавленных конфигов) — чтобы before/after мог
+    // ссылаться на другой добавленный конфиг того же сквада, а не только на
+    // панельный хост. Индекс кандидата → его normalized name.
+    $candNorm = [];
+    foreach ($candidates as $ci => $c) $candNorm[$ci] = squadconf_name_norm((string) ($c['name'] ?? ''));
+    $findCand = function ($anchor, $self) use ($candNorm) {
+        $a = squadconf_name_norm($anchor);
+        if ($a === '') return -1;
+        foreach ($candNorm as $cj => $x) if ($cj !== $self && $x !== '' && $x === $a) return $cj;
+        foreach ($candNorm as $cj => $x) if ($cj !== $self && $x !== '' && strpos($x, $a) !== false) return $cj;
+        return -1;
+    };
+
+    // Ключ каждого кандидата. Якорь на панельный хост / start / end считается
+    // сразу; якорь на другой кандидат откладываем и разрешаем относительно него.
+    $keys = [];        // ci => float|null (null = ещё не разрешён)
+    $pending = [];     // ci => [targetCandIndex, side]
     $seq = 0;
-    foreach ($candidates as $c) {
+    foreach ($candidates as $ci => $c) {
         $seq++;
-        $eps = $seq / 100000.0; // стабильный tie-break между кандидатами на одной позиции
+        $eps = $seq / 1000000.0; // стабильный tie-break между кандидатами на одной позиции
         $pos = $c['pos'] ?? ['mode' => 'end', 'anchor' => ''];
         $mode = $pos['mode'] ?? 'end';
-        if ($mode === 'start') {
-            $key = -1.0 + $eps;
-        } elseif ($mode === 'before') {
-            $a = $find($pos['anchor'] ?? ''); $key = ($a >= 0 ? $a - 0.5 : $n) + $eps;
-        } elseif ($mode === 'after') {
-            $a = $find($pos['anchor'] ?? ''); $key = ($a >= 0 ? $a + 0.5 : $n) + $eps;
-        } else {
-            $key = (float) $n + $eps; // end
-        }
-        $items[] = ['key' => $key, 'kind' => 'new', 'payload' => $c['payload'], 'name' => $c['name']];
+        $anchor = $pos['anchor'] ?? '';
+        if ($mode === 'start') { $keys[$ci] = -1.0 + $eps; continue; }
+        if ($mode === 'end')   { $keys[$ci] = (float) $n + $eps; continue; }
+        // before / after
+        $a = $find($anchor);
+        if ($a >= 0) { $keys[$ci] = ($mode === 'before' ? $a - 0.5 : $a + 0.5) + $eps; continue; }
+        $tgt = $findCand($anchor, $ci);
+        if ($tgt >= 0) { $keys[$ci] = null; $pending[$ci] = [$tgt, $mode]; continue; }
+        $keys[$ci] = (float) $n + $eps; // якорь нигде не найден → в конец
     }
+    // Итеративно разрешаем кандидат→кандидат (в т.ч. цепочки). Число проходов
+    // ограничено количеством кандидатов, поэтому циклы не зациклят.
+    for ($pass = count($candidates); $pass > 0 && $pending; $pass--) {
+        $progress = false;
+        foreach ($pending as $ci => [$tgt, $side]) {
+            if ($keys[$tgt] === null) continue; // цель ещё не готова
+            $delta = ($side === 'before' ? -1 : 1) * 0.001;
+            $keys[$ci] = $keys[$tgt] + $delta + ($ci + 1) / 1000000000.0; // сдвиг + tie-break
+            unset($pending[$ci]);
+            $progress = true;
+        }
+        if (!$progress) break; // остались только циклы
+    }
+    foreach ($pending as $ci => $_) $keys[$ci] = (float) $n + ($ci + 1) / 1000000.0; // цикл → в конец
+
+    $items = [];
+    foreach ($existing_names as $i => $nm) $items[] = ['key' => (float) $i, 'kind' => 'existing', 'orig' => $i];
+    foreach ($candidates as $ci => $c) $items[] = ['key' => $keys[$ci], 'kind' => 'new', 'payload' => $c['payload'], 'name' => $c['name']];
     usort($items, fn($x, $y) => $x['key'] <=> $y['key']); // PHP 8 — стабильная сортировка
     return $items;
 }
