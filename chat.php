@@ -14,6 +14,12 @@ function chat_json($data, $code = 200) {
 
 if (!is_installed()) chat_json(['ok' => false, 'error' => 'not installed'], 503);
 
+// Чат поддержки выведен из продукта: публичный эндпоинт отключён (виджет на
+// заглушке снят, админ-вкладка и API удалены). lib/chat.php и таблицы оставлены
+// нетронутыми, чтобы не терять данные; при желании вернуть — снять этот ранний
+// выход. Telegram-вебхук бота (если был установлен) теперь получает 404.
+chat_json(['ok' => false, 'error' => 'disabled'], 404);
+
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if (isset($_GET['tg'])) {

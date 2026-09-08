@@ -228,6 +228,12 @@ if (!is_installed()) {
     exit();
 }
 
+// Легаси-админка выведена из эксплуатации: единственная админка — React+Mantine
+// SPA под /admin/app/ (JSON-бэкенд admin/api.php). Всё, что установлено, уходит
+// туда. Этот файл остаётся только мастером первичной установки (ветка выше).
+header('Location: /admin/app/');
+exit();
+
 $C = cfg();
 
 session_name('submw_admin');

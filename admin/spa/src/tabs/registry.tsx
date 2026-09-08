@@ -1,7 +1,6 @@
 import { lazy, type ComponentType } from 'react';
 import {
   IconUsers,
-  IconMessageCircle,
   IconListDetails,
   IconPlug,
   IconBrush,
@@ -40,7 +39,6 @@ const Overrides = lazy(() => import('./Overrides').then((m) => ({ default: m.Ove
 const Addsub = lazy(() => import('./Addsub').then((m) => ({ default: m.Addsub })));
 const ExtImport = lazy(() => import('./ExtImport').then((m) => ({ default: m.ExtImport })));
 const Clod = lazy(() => import('./Clod').then((m) => ({ default: m.Clod })));
-const Chat = lazy(() => import('./Chat').then((m) => ({ default: m.Chat })));
 const Update = lazy(() => import('./Update').then((m) => ({ default: m.Update })));
 const Migrate = lazy(() => import('./Migrate').then((m) => ({ default: m.Migrate })));
 const SquadConfigs = lazy(() => import('./SquadConfigs').then((m) => ({ default: m.SquadConfigs })));
@@ -66,7 +64,6 @@ export const NAV: NavSection[] = [
     label: 'Главное',
     items: [
       { id: 'users', label: 'Пользователи', icon: IconUsers, component: Users },
-      { id: 'chat', label: 'Чат поддержки', icon: IconMessageCircle, component: Chat },
       { id: 'reqlog', label: 'Лог запросов', icon: IconListDetails, component: ReqLog },
     ],
   },
