@@ -4,11 +4,12 @@ import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle, IconDeviceFloppy, IconPlus, IconTags, IconTrash } from '@tabler/icons-react';
 import { apiGet, apiPost } from '../api';
 import { useAsync } from '../hooks';
-import { ConfigModal, ConfigTable, deleteConfigs, toggleConfig, type Config, type Squad } from './sqcfg/shared';
+import { ConfigModal, ConfigTable, deleteConfigs, toggleConfig, type Config, type Host, type Squad } from './sqcfg/shared';
 
 interface Data {
   squads: Squad[];
   configs: Config[];
+  hosts: Host[];
   api_err: string;
   xray_tpls: { name: string }[];
   xray_tpl_name: string;
@@ -80,6 +81,8 @@ export function SquadConfigs() {
         <ConfigModal
           kind="simple"
           squads={data.squads}
+          hosts={data.hosts}
+          configs={data.configs}
           xrayTpls={data.xray_tpls}
           initial={modal.cfg}
           onClose={() => setModal({ open: false, cfg: null })}

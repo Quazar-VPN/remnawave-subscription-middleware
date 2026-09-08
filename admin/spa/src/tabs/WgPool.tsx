@@ -21,12 +21,13 @@ import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle, IconDeviceFloppy, IconPlus, IconTrash, IconRefresh } from '@tabler/icons-react';
 import { apiGet, apiPost } from '../api';
 import { useAsync } from '../hooks';
-import { ConfigModal, ConfigTable, deleteConfigs, toggleConfig, type Config, type Squad } from './sqcfg/shared';
+import { ConfigModal, ConfigTable, deleteConfigs, toggleConfig, type Config, type Host, type Squad } from './sqcfg/shared';
 
 interface Lease { id: number; pool_id: string; config_id: number; short_uuid?: string; hwid?: string; manual?: number; seen_ts?: number }
 interface Data {
   squads: Squad[];
   configs: Config[];
+  hosts: Host[];
   api_err: string;
   leases: Lease[];
   modes: Record<string, string>;
@@ -156,7 +157,7 @@ export function WgPool() {
       </Card>
 
       {modal.open && (
-        <ConfigModal kind="wg" squads={data.squads} initial={modal.cfg} onClose={() => setModal({ open: false, cfg: null })} onSaved={reload} />
+        <ConfigModal kind="wg" squads={data.squads} hosts={data.hosts} configs={data.configs} initial={modal.cfg} onClose={() => setModal({ open: false, cfg: null })} onSaved={reload} />
       )}
     </Stack>
   );

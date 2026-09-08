@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -24,7 +24,9 @@ export interface Squad { uuid: string; name: string; members: number }
 export interface Config {
   id: number; name: string; type: string; squad_uuids: string[]; squad_names: string[];
   grp: string; enabled: boolean; position: string; xray_tpl: string; summary: string; raw: string;
+  overrides?: { serverDescription: string; sockopt: string; xhttpExtra: string; mux: string; finalMask: string };
 }
+export interface Host { remark: string; excluded: string[]; disabled: boolean; hidden: boolean }
 
 export function ConfigTable({
   configs, selected, onSel, onEdit, onToggle, onDelete,
@@ -83,10 +85,12 @@ export function ConfigTable({
 interface Overrides { serverDescription: string; sockopt: string; xhttpExtra: string; mux: string; finalMask: string }
 
 export function ConfigModal({
-  kind, squads, xrayTpls, initial, onClose, onSaved,
+  kind, squads, hosts, configs, xrayTpls, initial, onClose, onSaved,
 }: {
   kind: 'simple' | 'wg';
   squads: Squad[];
+  hosts: Host[];
+  configs: Config[];
   xrayTpls?: { name: string }[];
   initial: Config | null;
   onClose: () => void;
@@ -97,20 +101,60 @@ export function ConfigModal({
   const [grp, setGrp] = useState(initial?.grp ?? '');
   const [sel, setSel] = useState<string[]>(initial?.squad_uuids ?? []);
   const [raw, setRaw] = useState(initial?.raw ?? '');
-  const posRaw = initial?.position ?? 'end';
-  const [posKind, setPosKind] = useState(posRaw.startsWith('before:') ? 'before' : posRaw.startsWith('after:') ? 'after' : posRaw);
-  const [posRemark, setPosRemark] = useState(posRaw.includes(':') ? posRaw.split(':').slice(1).join(':') : '');
+  const [position, setPosition] = useState(initial?.position ?? 'end');
   const [xrayTpl, setXrayTpl] = useState(initial?.xray_tpl ?? '');
-  const [ov, setOv] = useState<Overrides>({ serverDescription: '', sockopt: '', xhttpExtra: '', mux: '', finalMask: '' });
+
+  // Список якорей позиции, отфильтрованный по выбранным сквадам (как легаси
+  // sqcfgRebuildPos). Панельные хосты: показываем только доступные ВСЕМ выбранным
+  // сквадам (host исключён, если сквад в его excludedInternalSquads); disabled/
+  // hidden скрыты. Для «Ручной привязки»/без сквадов — все хосты. Плюс #3:
+  // добавленные конфиги тех же сквадов — чтобы ставить один добавленный до/после
+  // другого. Себя из списка якорей исключаем.
+  const posOptions = useMemo(() => {
+    const manual = sel.includes('__manual__');
+    const squadSel = sel.filter((s) => s !== '__manual__');
+    const useAll = manual || squadSel.length === 0;
+    const hostAnchors: { value: string; label: string }[] = [];
+    for (const h of hosts) {
+      if (!h.remark || h.disabled || h.hidden) continue;
+      if (!useAll && !squadSel.every((sq) => !h.excluded.includes(sq))) continue;
+      hostAnchors.push({ value: `before:${h.remark}`, label: `перед ${h.remark}` });
+      hostAnchors.push({ value: `after:${h.remark}`, label: `после ${h.remark}` });
+    }
+    const cfgAnchors: { value: string; label: string }[] = [];
+    for (const c of configs) {
+      if (initial && c.id === initial.id) continue;
+      if (!c.name) continue;
+      if (!useAll && !c.squad_uuids.some((sq) => squadSel.includes(sq))) continue;
+      cfgAnchors.push({ value: `before:${c.name}`, label: `перед «${c.name}»` });
+      cfgAnchors.push({ value: `after:${c.name}`, label: `после «${c.name}»` });
+    }
+    const data: unknown[] = [{ value: 'end', label: 'В конец (по умолчанию)' }, { value: 'start', label: 'В начало' }];
+    if (hostAnchors.length) data.push({ group: 'Хосты сквада', items: hostAnchors });
+    if (cfgAnchors.length) data.push({ group: 'Добавленные конфиги', items: cfgAnchors });
+    return data;
+  }, [sel, hosts, configs, initial]);
+
+  // Если сохранённая позиция больше не в списке (сменили сквады) — на «В конец».
+  const posValues = useMemo(() => {
+    const v = new Set(['end', 'start']);
+    for (const g of posOptions) {
+      const grp = g as { value?: string; items?: { value: string }[] };
+      if (grp.value) v.add(grp.value);
+      if (grp.items) for (const it of grp.items) v.add(it.value);
+    }
+    return v;
+  }, [posOptions]);
+  const posValue = posValues.has(position) ? position : 'end';
+  const [ov, setOv] = useState<Overrides>(initial?.overrides ?? { serverDescription: '', sockopt: '', xhttpExtra: '', mux: '', finalMask: '' });
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function save() {
     setBusy(true);
     try {
-      const position = posKind === 'before' || posKind === 'after' ? `${posKind}:${posRemark.trim()}` : posKind;
       const r = await apiPost<{ ok: boolean; msg?: string; error?: string }>('sqcfg_save', {
-        id: initial?.id ?? 0, kind, squads: sel, name, grp, raw, position, xray_tpl: xrayTpl, overrides: ov,
+        id: initial?.id ?? 0, kind, squads: sel, name, grp, raw, position: posValue, xray_tpl: xrayTpl, overrides: ov,
       });
       if (r.ok) { notifications.show({ color: 'teal', message: r.msg || 'Сохранено' }); onSaved(); onClose(); }
       else notifications.show({ color: 'red', message: r.error || 'Ошибка' });
@@ -135,11 +179,16 @@ export function ConfigModal({
         </div>
         <Textarea label="Конфиг (URI / WG / xray-json / base64)" autosize minRows={4} maxRows={12} value={raw} onChange={(e) => setRaw(e.currentTarget.value)} styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)', fontSize: 12 } }} />
         <Group grow align="flex-end">
-          <Select label="Позиция" value={posKind} onChange={(v) => setPosKind(v || 'end')} allowDeselect={false}
-            data={[{ value: 'end', label: 'В конец' }, { value: 'start', label: 'В начало' }, { value: 'before', label: 'Перед хостом…' }, { value: 'after', label: 'После хоста…' }]} />
-          {(posKind === 'before' || posKind === 'after') && (
-            <TextInput label="Remark хоста" value={posRemark} onChange={(e) => setPosRemark(e.currentTarget.value)} />
-          )}
+          <Select
+            label="Позиция в подписке"
+            description={sel.length ? 'якоря отфильтрованы по выбранным сквадам' : 'выберите сквады, чтобы увидеть якоря'}
+            searchable
+            comboboxProps={{ withinPortal: true }}
+            value={posValue}
+            onChange={(v) => setPosition(v || 'end')}
+            allowDeselect={false}
+            data={posOptions as never}
+          />
           {kind === 'simple' && xrayTpls && (
             <Select label="xray-шаблон (uuid)" clearable value={xrayTpl || null} onChange={(v) => setXrayTpl(v || '')}
               data={xrayTpls.map((t) => ({ value: t.name, label: t.name }))} placeholder="глобальный" />

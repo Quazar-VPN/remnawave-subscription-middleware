@@ -1017,6 +1017,8 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
         $type = (string) ($c['type'] ?? '');
         $sqIds = squadconf_squads_of($c);
         $parsed = squadconf_parse_any((string) ($c['raw'] ?? ''));
+        $ovr = squadconf_overrides_of($c);
+        $ovJson = fn($k) => isset($ovr[$k]) && is_array($ovr[$k]) ? (string) json_encode($ovr[$k], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '';
         $row = [
             'id'          => (int) $c['id'],
             'name'        => (string) ($c['name'] ?? ''),
@@ -1025,21 +1027,47 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
             'squad_names' => array_map(fn($u) => $names[$u] ?? $u, $sqIds),
             'grp'         => (string) ($c['grp'] ?? ''),
             'enabled'     => (int) ($c['enabled'] ?? 0) === 1,
-            'position'    => squadconf_position_of($c),
+            // Сырая строка позиции (end|start|before:<remark>|after:<remark>) —
+            // ровно то, чем оперирует пиклист редактора; squadconf_position_of()
+            // отдал бы уже разобранный массив, который редактору не подходит.
+            'position'    => (string) ($c['position'] ?? '') !== '' ? (string) $c['position'] : 'end',
             'xray_tpl'    => squadconf_tpl_of($c),
             'summary'     => squadconf_summary($parsed),
             'raw'         => (string) ($c['raw'] ?? ''),
+            // Оверрайды для преднаполнения редактора (иначе сохранение их затрёт).
+            'overrides'   => [
+                'serverDescription' => (string) ($ovr['serverDescription'] ?? ''),
+                'sockopt'    => $ovJson('sockopt'),
+                'xhttpExtra' => $ovJson('xhttpExtra'),
+                'mux'        => $ovJson('mux'),
+                'finalMask'  => $ovJson('finalMask'),
+            ],
         ];
         if (in_array($type, $wgTypes, true)) $wg[] = $row; else $simple[] = $row;
     }
     $sqOut = array_map(fn($sq) => ['uuid' => $sq['uuid'], 'name' => $sq['name'], 'members' => (int) ($sq['members'] ?? 0)], $squads);
+
+    // Панельные хосты для пиклиста позиции (before/after <хост>), с исключёнными
+    // сквадами — редактор фильтрует их по выбранным сквадам (как легаси SQCFG_HOSTS).
+    $hosts = [];
+    if (remnawave_url() !== '' && remnawave_token() !== '') {
+        $he = '';
+        foreach (remnawave_hosts($he) as $h) {
+            $hosts[] = [
+                'remark'   => (string) ($h['remark'] ?? ''),
+                'excluded' => array_values($h['excluded'] ?? []),
+                'disabled' => !empty($h['disabled']),
+                'hidden'   => !empty($h['hidden']),
+            ];
+        }
+    }
 
     if ($r === 'squad_configs') {
         $tpls = []; $te = '';
         if (remnawave_url() !== '' && remnawave_token() !== '') {
             foreach (remnawave_sub_templates($te) as $t) if (($t['type'] ?? '') === 'XRAY_JSON') $tpls[] = ['name' => (string) ($t['name'] ?? '')];
         }
-        jout(['ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $simple, 'api_err' => $err, 'xray_tpls' => $tpls, 'xray_tpl_name' => (string) setting('squad_xray_tpl_name', '')]);
+        jout(['ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $simple, 'hosts' => $hosts, 'api_err' => $err, 'xray_tpls' => $tpls, 'xray_tpl_name' => (string) setting('squad_xray_tpl_name', '')]);
     }
 
     // wg_pool: пул, аренды, режимы, сток/своб.
@@ -1057,7 +1085,7 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
         }
     }
     jout([
-        'ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $wg, 'api_err' => $err,
+        'ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $wg, 'hosts' => $hosts, 'api_err' => $err,
         'leases' => $leases, 'modes' => $modes, 'stock' => $stock, 'free' => $free,
         'reclaim_days' => wglease_reclaim_days(), 'dupes' => wglease_dupes(),
     ]);
