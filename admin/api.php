@@ -931,6 +931,7 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
             'squad_uuids' => $sqIds,
             'squad_names' => array_map(fn($u) => $names[$u] ?? $u, $sqIds),
             'grp'         => (string) ($c['grp'] ?? ''),
+            'lb_tag'      => squadconf_lbtag_of($c),
             'enabled'     => (int) ($c['enabled'] ?? 0) === 1,
             // Сырая строка позиции (end|start|before:<remark>|after:<remark>) —
             // ровно то, чем оперирует пиклист редактора; squadconf_position_of()
@@ -955,6 +956,7 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
     // Панельные хосты для пиклиста позиции (before/after <хост>), с исключёнными
     // сквадами — редактор фильтрует их по выбранным сквадам (как легаси SQCFG_HOSTS).
     $hosts = [];
+    $panelTags = [];
     if (remnawave_url() !== '' && remnawave_token() !== '') {
         $he = '';
         foreach (remnawave_hosts($he) as $h) {
@@ -964,15 +966,18 @@ if ($r === 'squad_configs' || $r === 'wg_pool') {
                 'disabled' => !empty($h['disabled']),
                 'hidden'   => !empty($h['hidden']),
             ];
+            foreach (($h['tags'] ?? []) as $tg) { $tg = trim((string) $tg); if ($tg !== '') $panelTags[$tg] = true; }
         }
     }
+    $panelTags = array_keys($panelTags);
+    sort($panelTags, SORT_NATURAL | SORT_FLAG_CASE);
 
     if ($r === 'squad_configs') {
         $tpls = []; $te = '';
         if (remnawave_url() !== '' && remnawave_token() !== '') {
             foreach (remnawave_sub_templates($te) as $t) if (($t['type'] ?? '') === 'XRAY_JSON') $tpls[] = ['name' => (string) ($t['name'] ?? '')];
         }
-        jout(['ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $simple, 'hosts' => $hosts, 'api_err' => $err, 'xray_tpls' => $tpls, 'xray_tpl_name' => (string) setting('squad_xray_tpl_name', '')]);
+        jout(['ok' => true, 'squads' => $sqOut, 'squad_names' => $names, 'configs' => $simple, 'hosts' => $hosts, 'api_err' => $err, 'xray_tpls' => $tpls, 'xray_tpl_name' => (string) setting('squad_xray_tpl_name', ''), 'panel_tags' => $panelTags]);
     }
 
     // wg_pool: пул, аренды, режимы, сток/своб.
@@ -1011,6 +1016,7 @@ if ($r === 'sqcfg_save') {
     $pos    = (string) ($b['position'] ?? 'end');
     if ($pos !== 'end' && $pos !== 'start' && strpos($pos, 'before:') !== 0 && strpos($pos, 'after:') !== 0) $pos = 'end';
     $xrayTpl = trim((string) ($b['xray_tpl'] ?? ''));
+    $lbTag   = trim((string) ($b['lb_tag'] ?? '')); // тег-балансер (имя тега хоста в панели)
 
     // Оверрайды: JSON-поля валидируем, serverDescription — строка.
     $ov = []; $ovIn = is_array($b['overrides'] ?? null) ? $b['overrides'] : [];
@@ -1032,8 +1038,8 @@ if ($r === 'sqcfg_save') {
     if ($kind === 'wg' && !$isWg) jout(['ok' => false, 'error' => 'Это не WG/AWG']);
     if ($kind === 'simple' && $isWg) jout(['ok' => false, 'error' => 'Это WG/AWG — используйте вкладку WG/AWG']);
     $pj = json_encode($parsed, JSON_UNESCAPED_UNICODE);
-    if ($id > 0) squadconf_update($id, $squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides);
-    else squadconf_add($squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides);
+    if ($id > 0) squadconf_update($id, $squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides, $lbTag);
+    else squadconf_add($squads, $parsed['type'], $name, $raw, $pj, $grp, $pos, $xrayTpl, $overrides, $lbTag);
     jout(['ok' => true, 'msg' => ($id > 0 ? 'Конфиг обновлён (' : 'Конфиг добавлен (') . squadconf_summary($parsed) . ')']);
 }
 if ($r === 'sqcfg_parse') {

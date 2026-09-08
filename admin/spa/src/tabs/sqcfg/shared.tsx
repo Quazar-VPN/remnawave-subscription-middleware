@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   ActionIcon,
+  Autocomplete,
   Badge,
   Button,
   Checkbox,
@@ -24,6 +25,7 @@ export interface Squad { uuid: string; name: string; members: number }
 export interface Config {
   id: number; name: string; type: string; squad_uuids: string[]; squad_names: string[];
   grp: string; enabled: boolean; position: string; xray_tpl: string; summary: string; raw: string;
+  lb_tag?: string;
   overrides?: { serverDescription: string; sockopt: string; xhttpExtra: string; mux: string; finalMask: string };
 }
 export interface Host { remark: string; excluded: string[]; disabled: boolean; hidden: boolean }
@@ -85,13 +87,14 @@ export function ConfigTable({
 interface Overrides { serverDescription: string; sockopt: string; xhttpExtra: string; mux: string; finalMask: string }
 
 export function ConfigModal({
-  kind, squads, hosts, configs, xrayTpls, initial, onClose, onSaved,
+  kind, squads, hosts, configs, xrayTpls, panelTags, initial, onClose, onSaved,
 }: {
   kind: 'simple' | 'wg';
   squads: Squad[];
   hosts: Host[];
   configs: Config[];
   xrayTpls?: { name: string }[];
+  panelTags?: string[];
   initial: Config | null;
   onClose: () => void;
   onSaved: () => void;
@@ -103,6 +106,7 @@ export function ConfigModal({
   const [raw, setRaw] = useState(initial?.raw ?? '');
   const [position, setPosition] = useState(initial?.position ?? 'end');
   const [xrayTpl, setXrayTpl] = useState(initial?.xray_tpl ?? '');
+  const [lbTag, setLbTag] = useState(initial?.lb_tag ?? '');
 
   // Список якорей позиции, отфильтрованный по выбранным сквадам (как легаси
   // sqcfgRebuildPos). Панельные хосты: показываем только доступные ВСЕМ выбранным
@@ -154,7 +158,7 @@ export function ConfigModal({
     setBusy(true);
     try {
       const r = await apiPost<{ ok: boolean; msg?: string; error?: string }>('sqcfg_save', {
-        id: initial?.id ?? 0, kind, squads: sel, name, grp, raw, position: posValue, xray_tpl: xrayTpl, overrides: ov,
+        id: initial?.id ?? 0, kind, squads: sel, name, grp, raw, position: posValue, xray_tpl: xrayTpl, overrides: ov, lb_tag: lbTag.trim(),
       });
       if (r.ok) { notifications.show({ color: 'teal', message: r.msg || 'Сохранено' }); onSaved(); onClose(); }
       else notifications.show({ color: 'red', message: r.error || 'Ошибка' });
@@ -194,6 +198,17 @@ export function ConfigModal({
               data={xrayTpls.map((t) => ({ value: t.name, label: t.name }))} placeholder="глобальный" />
           )}
         </Group>
+        {kind === 'simple' && (
+          <Autocomplete
+            label="Тег-балансер (Happ/xray)"
+            description="хосты с одинаковым тегом сводятся в один клиентский балансер; выберите тег из панели или введите новый"
+            value={lbTag}
+            onChange={setLbTag}
+            data={panelTags ?? []}
+            placeholder="напр. LTE_BALANCER"
+            comboboxProps={{ withinPortal: true }}
+          />
+        )}
 
         {kind === 'simple' && (
           <>
