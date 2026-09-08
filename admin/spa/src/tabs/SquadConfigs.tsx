@@ -13,6 +13,7 @@ interface Data {
   api_err: string;
   xray_tpls: { name: string }[];
   xray_tpl_name: string;
+  panel_tags?: string[];
 }
 
 export function SquadConfigs() {
@@ -84,6 +85,7 @@ export function SquadConfigs() {
           hosts={data.hosts}
           configs={data.configs}
           xrayTpls={data.xray_tpls}
+          panelTags={data.panel_tags}
           initial={modal.cfg}
           onClose={() => setModal({ open: false, cfg: null })}
           onSaved={reload}

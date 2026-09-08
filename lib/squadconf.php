@@ -66,6 +66,13 @@ function squadconf_ensure() {
             try { $p->exec('ALTER TABLE squad_configs ADD COLUMN source_key ' . (db_driver() === 'mysql' ? 'VARCHAR(191)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
             set_setting('sqcfg_source_col', '1');
         }
+        // Форк Quazar (R3): тег-балансер. Хосты с одинаковым lb_tag в формате Happ/xray
+        // дополнительно сводятся в один клиентский балансер (см. squadconf_inject_xray_json).
+        // Тег = имя тега хоста в панели Remnawave (напр. LTE_BALANCER). Аддитивно.
+        if (setting('sqcfg_lbtag_col', '') !== '1') {
+            try { $p->exec('ALTER TABLE squad_configs ADD COLUMN lb_tag ' . (db_driver() === 'mysql' ? 'VARCHAR(64)' : 'TEXT') . ' NULL'); } catch (Throwable $e) {}
+            set_setting('sqcfg_lbtag_col', '1');
+        }
     } catch (Throwable $e) { error_log('submw squadconf ensure: ' . $e->getMessage()); }
 }
 
@@ -116,6 +123,11 @@ function squadconf_position_of($row) {
 
 function squadconf_tpl_of($row) {
     return trim((string) ($row['xray_tpl'] ?? ''));
+}
+
+// Форк Quazar (R3): тег-балансер строки конфига (имя тега хоста в панели).
+function squadconf_lbtag_of($row) {
+    return trim((string) ($row['lb_tag'] ?? ''));
 }
 
 function squadconf_overrides_of($row) {
@@ -361,7 +373,7 @@ function squadconf_for_squads(array $squad_uuids) {
     return $out;
 }
 
-function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '', $position = 'end', $xray_tpl = '', $overrides = '') {
+function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '', $position = 'end', $xray_tpl = '', $overrides = '', $lb_tag = '') {
     squadconf_ensure();
     $squad_uuids = array_values(array_filter(array_unique(array_map('strval', (array) $squad_uuids)), fn($s) => trim($s) !== ''));
     $raw = (string) $raw;
@@ -370,8 +382,9 @@ function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '', $po
     $position = trim((string) $position);
     $xray_tpl = trim((string) $xray_tpl);
     $overrides = trim((string) $overrides);
+    $lb_tag = trim((string) $lb_tag);
     try {
-        $st = $p->prepare('INSERT INTO squad_configs (squad_uuid, squads, type, name, raw, parsed, grp, position, xray_tpl, overrides) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $st = $p->prepare('INSERT INTO squad_configs (squad_uuid, squads, type, name, raw, parsed, grp, position, xray_tpl, overrides, lb_tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         return $st->execute([
             $squad_uuids[0],
             json_encode(array_values($squad_uuids), JSON_UNESCAPED_SLASHES),
@@ -383,6 +396,7 @@ function squadconf_add($squad_uuids, $type, $name, $raw, $parsed, $grp = '', $po
             ($position !== '' ? mb_substr($position, 0, 191) : null),
             ($xray_tpl !== '' ? mb_substr($xray_tpl, 0, 64) : null),
             ($overrides !== '' ? $overrides : null),
+            ($lb_tag !== '' ? mb_substr($lb_tag, 0, 64) : null),
         ]);
     } catch (Throwable $e) { error_log('submw squadconf add: ' . $e->getMessage()); return false; }
 }
@@ -419,7 +433,7 @@ function squadconf_toggle($id, $enabled) {
 
 // $grp/$position/$xray_tpl/$overrides === null → соответствующее поле НЕ трогаем
 // (для массовых правок параметров конфига, которые шлют только базовые поля).
-function squadconf_update($id, $squad_uuids, $type, $name, $raw, $parsed, $grp = null, $position = null, $xray_tpl = null, $overrides = null) {
+function squadconf_update($id, $squad_uuids, $type, $name, $raw, $parsed, $grp = null, $position = null, $xray_tpl = null, $overrides = null, $lb_tag = null) {
     squadconf_ensure();
     $id = (int) $id;
     $squad_uuids = array_values(array_filter(array_unique(array_map('strval', (array) $squad_uuids)), fn($s) => trim($s) !== ''));
@@ -439,6 +453,7 @@ function squadconf_update($id, $squad_uuids, $type, $name, $raw, $parsed, $grp =
     if ($position !== null)  { $ps = trim((string) $position); $cols[] = 'position = ?';  $vals[] = ($ps !== '' ? mb_substr($ps, 0, 191) : null); }
     if ($xray_tpl !== null)  { $xt = trim((string) $xray_tpl); $cols[] = 'xray_tpl = ?';  $vals[] = ($xt !== '' ? mb_substr($xt, 0, 64) : null); }
     if ($overrides !== null) { $ovr = trim((string) $overrides); $cols[] = 'overrides = ?'; $vals[] = ($ovr !== '' ? $ovr : null); }
+    if ($lb_tag !== null)    { $lt = trim((string) $lb_tag);   $cols[] = 'lb_tag = ?';    $vals[] = ($lt !== '' ? mb_substr($lt, 0, 64) : null); }
     $vals[] = $id;
     try {
         $st = $p->prepare('UPDATE squad_configs SET ' . implode(', ', $cols) . ' WHERE id = ?');
@@ -1265,6 +1280,74 @@ function xray_tpl_make_single($el, $proxy) {
     }
 }
 
+// Форк Quazar (R3): собрать элемент-БАЛАНСЕР из скелета шаблона + N member-аутбаундов.
+// В отличие от make_single: СОХРАНЯЕТ routing.balancers (или синтезирует) и
+// observatory/burstObservatory (нужны xray для замера латентности members). Все
+// members получают тег с префиксом $prefix ('proxy'), selector балансера — тот же
+// префикс, поэтому members попадают в балансер автоматически.
+function xray_tpl_make_balancer($el, array $members, $prefix = 'proxy') {
+    $term = [];
+    if (isset($el->outbounds) && is_array($el->outbounds)) {
+        foreach ($el->outbounds as $ob) {
+            if (is_object($ob) && in_array((string) ($ob->protocol ?? ''), ['freedom', 'blackhole', 'dns'], true)) $term[] = $ob;
+        }
+    }
+    $el->outbounds = array_merge(array_values($members), $term); // members впереди, терминальные — в конце
+    unset($el->remnawave, $el->meta); // observatory/burstObservatory сохраняем
+    if (!isset($el->routing) || !is_object($el->routing)) $el->routing = (object) [];
+    $balTag = 'balancer';
+    $hasBal = false;
+    if (isset($el->routing->balancers) && is_array($el->routing->balancers)) {
+        foreach ($el->routing->balancers as $b) {
+            if (is_object($b) && trim((string) ($b->tag ?? '')) !== '') { $balTag = (string) $b->tag; $b->selector = [$prefix]; $hasBal = true; break; }
+        }
+    }
+    if (!$hasBal) $el->routing->balancers = [(object) ['tag' => $balTag, 'selector' => [$prefix], 'strategy' => (object) ['type' => 'random']]];
+    $rules = (isset($el->routing->rules) && is_array($el->routing->rules)) ? $el->routing->rules : [];
+    // Правила скелета, зашитые на outboundTag=proxy, переводим на балансер.
+    foreach ($rules as $r) { if (is_object($r) && ($r->outboundTag ?? '') === 'proxy') { unset($r->outboundTag); $r->balancerTag = $balTag; } }
+    $hasRule = false;
+    foreach ($rules as $r) { if (is_object($r) && ($r->balancerTag ?? '') === $balTag) { $hasRule = true; break; } }
+    if (!$hasRule) $rules[] = (object) ['type' => 'field', 'network' => 'tcp,udp', 'balancerTag' => $balTag];
+    $el->routing->rules = $rules;
+}
+
+// Форк Quazar (R3): по тегу-балансеру найти в панели «дисплей-хост» — хост с этим
+// тегом, чей remark содержит плейсхолдер ({{…}}, напр. «Белые списки ↓ [еще {{TRAFFIC_LEFT}}]»),
+// в отличие от реальных членов с фиксированным remark. Возвращает
+// ['prefix'=>имя до ' ['] для матчинга элемента в подписке и эмита нового.
+function squadconf_balancer_display($tag) {
+    static $memo = [];
+    $tag = trim((string) $tag);
+    if ($tag === '') return ['prefix' => ''];
+    if (isset($memo[$tag])) return $memo[$tag];
+    // Кэш в settings (TTL 600с): без него /api/hosts дёргался бы на каждый запрос
+    // подписки. Кэшируем и «не найдено» (prefix=''), чтобы не долбить панель зря.
+    $ck = 'sqcfg_lbdisp_' . md5($tag);
+    $cached = json_decode((string) setting($ck, ''), true);
+    if (is_array($cached) && array_key_exists('prefix', $cached) && (time() - (int) ($cached['ts'] ?? 0) < 600)) {
+        return $memo[$tag] = ['prefix' => (string) $cached['prefix'], 'tpl' => (string) ($cached['tpl'] ?? '')];
+    }
+    $prefix = ''; $tpl = '';
+    try {
+        if (remnawave_url() !== '' && remnawave_token() !== '') {
+            $e = '';
+            foreach (remnawave_hosts($e) as $h) {
+                $tags = $h['tags'] ?? [];
+                if (!is_array($tags) || !in_array($tag, $tags, true)) continue;
+                $rm = (string) ($h['remark'] ?? '');
+                if (strpos($rm, '{{') === false) continue; // дисплей-хост несёт плейсхолдер ({{TRAFFIC_LEFT}})
+                $cut = ($p = strpos($rm, ' [')) !== false ? substr($rm, 0, $p) : preg_replace('/\s*\{\{.*$/s', '', $rm);
+                $prefix = trim((string) $cut);
+                $tpl = (string) ($h['xray_tpl_uuid'] ?? ''); // шаблон самого хоста-балансера = верный скелет
+                break;
+            }
+        }
+    } catch (Throwable $e) {}
+    try { set_setting($ck, json_encode(['prefix' => $prefix, 'tpl' => $tpl, 'ts' => time()], JSON_UNESCAPED_UNICODE)); } catch (Throwable $e) {}
+    return $memo[$tag] = ['prefix' => $prefix, 'tpl' => $tpl];
+}
+
 function squadconf_inject_xray_json($body, array $configs) {
     $obj = json_decode((string) $body);
     if (!is_array($obj) && !is_object($obj)) return $body;
@@ -1302,6 +1385,63 @@ function squadconf_inject_xray_json($body, array $configs) {
             if ($sd !== '') $el->meta = (object) ['serverDescription' => $sd]; // п.3: Happ serverDescription
             $built[] = ['name' => $cd['name'], 'pos' => squadconf_position_of($cd['c']), 'payload' => $el];
         }
+        // Форк Quazar (R3): тег-балансер. Кандидаты с lb_tag ДОПОЛНИТЕЛЬНО (сверх своих
+        // отдельных элементов выше — «N хостов + балансер») сводятся в один клиентский
+        // балансер: либо дописываются members в уже присутствующий панельный элемент-
+        // балансер («↓»), либо (если его в теле нет) эмитится новый из скелета шаблона.
+        try {
+            $groups = [];
+            foreach ($cands as $cd) { $lt = squadconf_lbtag_of($cd['c']); if ($lt !== '') $groups[$lt][] = $cd; }
+            foreach ($groups as $lt => $members) {
+                $outs = [];
+                foreach ($members as $cd) {
+                    $mo = xray_outbound_any($cd['pn'], 'proxy_sq' . (int) ($cd['c']['id'] ?? 0));
+                    if ($mo) $outs[] = $mo; // xray не собрал транспорт (напр. tuic) — пропускаем члена
+                }
+                if (!$outs) continue;
+                $disp = squadconf_balancer_display($lt);
+                $prefix = (string) ($disp['prefix'] ?? '');
+                $dtpl = (string) ($disp['tpl'] ?? '');
+                // 1) элемент-балансер уже в теле → дописываем members + расширяем selector.
+                $target = null;
+                if ($prefix !== '') {
+                    $pn = squadconf_name_norm($prefix);
+                    foreach ($obj as $el) {
+                        if (!is_object($el)) continue;
+                        $rn = squadconf_name_norm((string) ($el->remarks ?? ''));
+                        if ($rn !== '' && strpos($rn, $pn) === 0) { $target = $el; break; }
+                    }
+                }
+                if (is_object($target)) {
+                    if (!isset($target->outbounds) || !is_array($target->outbounds)) $target->outbounds = [];
+                    foreach ($outs as $mo) $target->outbounds[] = $mo;
+                    if (isset($target->routing->balancers) && is_array($target->routing->balancers)) {
+                        foreach ($target->routing->balancers as $b) {
+                            if (!is_object($b)) continue;
+                            $sel = (isset($b->selector) && is_array($b->selector)) ? $b->selector : [];
+                            foreach ($outs as $mo) { $t = (string) ($mo['tag'] ?? ''); if ($t !== '' && !in_array($t, $sel, true)) $sel[] = $t; }
+                            $b->selector = $sel;
+                        }
+                    }
+                    continue;
+                }
+                // 2) «↓» в теле нет → эмитим новый элемент-балансер из скелета шаблона.
+                // Приоритет скелета: шаблон самого хоста-балансера в панели (верная
+                // «обход»-маршрутизация) → per-config xray_tpl → глобальный.
+                $tpl = null;
+                foreach ([$dtpl, squadconf_tpl_of($members[0]['c'])] as $tk) {
+                    if (trim((string) $tk) === '') continue;
+                    $t = squadconf_xray_tpl_by($tk);
+                    if (is_array($t) && $t) { $tpl = json_decode(json_encode($t)); break; }
+                }
+                if (!is_object($tpl)) $tpl = $global_tpl;
+                if (!is_object($tpl)) continue;
+                $el = json_decode(json_encode($tpl));
+                xray_tpl_make_balancer($el, $outs, 'proxy');
+                $el->remarks = ($prefix !== '' ? $prefix : $lt);
+                $built[] = ['name' => $el->remarks, 'pos' => ['mode' => 'end', 'anchor' => ''], 'payload' => $el];
+            }
+        } catch (Throwable $e) { error_log('submw squadconf balancer: ' . $e->getMessage()); }
         if (!$built) return $body;
         $items = squadconf_plan_order($ex_names, $built);
         $seqOut = [];

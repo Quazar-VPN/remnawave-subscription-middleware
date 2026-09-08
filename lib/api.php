@@ -264,6 +264,10 @@ function remnawave_hosts(&$error = '') {
                 elseif (is_array($s) && !empty($s['uuid'])) $excl[] = (string) $s['uuid'];
             }
         }
+        $tags = [];
+        if (isset($h['tags']) && is_array($h['tags'])) {
+            foreach ($h['tags'] as $tg) { $tg = trim((string) $tg); if ($tg !== '') $tags[] = $tg; }
+        }
         $out[] = [
             'uuid'     => (string) $h['uuid'],
             'remark'   => (string) ($h['remark'] ?? ''),
@@ -271,6 +275,8 @@ function remnawave_hosts(&$error = '') {
             'disabled' => !empty($h['isDisabled']),
             'hidden'   => !empty($h['isHidden']),
             'excluded' => $excl, // сквады, которым хост НЕ отдаётся
+            'tags'     => $tags, // теги хоста в панели (для тега-балансера доп. конфигов)
+            'xray_tpl_uuid' => (string) ($h['xrayJsonTemplateUuid'] ?? ''), // скелет балансера
         ];
     }
     usort($out, fn($a, $b) => $a['pos'] <=> $b['pos']);
