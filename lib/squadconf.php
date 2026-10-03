@@ -1325,7 +1325,8 @@ function xray_tpl_make_balancer($el, array $members, $prefix = 'proxy') {
 
 // Форк Quazar (R3): по тегу-балансеру найти в панели «дисплей-хост» — хост с этим
 // тегом, чей remark содержит плейсхолдер ({{…}}, напр. «Белые списки ↓ [еще {{TRAFFIC_LEFT}}]»),
-// в отличие от реальных членов с фиксированным remark. Возвращает
+// в отличие от реальных членов с фиксированным remark; без плейсхолдера — хост с
+// тегом, чей xray-шаблон объявляет балансер. Возвращает
 // ['prefix'=>имя до ' ['] для матчинга элемента в подписке и эмита нового.
 function squadconf_balancer_display($tag) {
     static $memo = [];
@@ -1343,15 +1344,32 @@ function squadconf_balancer_display($tag) {
     try {
         if (remnawave_url() !== '' && remnawave_token() !== '') {
             $e = '';
+            $tagged = [];
             foreach (remnawave_hosts($e) as $h) {
                 $tags = $h['tags'] ?? [];
                 if (!is_array($tags) || !in_array($tag, $tags, true)) continue;
+                $tagged[] = $h;
                 $rm = (string) ($h['remark'] ?? '');
                 if (strpos($rm, '{{') === false) continue; // дисплей-хост несёт плейсхолдер ({{TRAFFIC_LEFT}})
                 $cut = ($p = strpos($rm, ' [')) !== false ? substr($rm, 0, $p) : preg_replace('/\s*\{\{.*$/s', '', $rm);
                 $prefix = trim((string) $cut);
                 $tpl = (string) ($h['xray_tpl_uuid'] ?? ''); // шаблон самого хоста-балансера = верный скелет
                 break;
+            }
+            // Фолбэк: дисплей-хост без плейсхолдера (напр. «Стандартный 🗽», address auto_eu) —
+            // хост с этим тегом, чей xray-шаблон объявляет routing.balancers. У членов
+            // балансера шаблона нет либо он без балансеров.
+            if ($prefix === '') {
+                foreach ($tagged as $h) {
+                    $tk = (string) ($h['xray_tpl_uuid'] ?? '');
+                    if ($tk === '') continue;
+                    $t = squadconf_xray_tpl_by($tk);
+                    if (!is_array($t) || empty($t['routing']['balancers'])) continue;
+                    $rm = (string) ($h['remark'] ?? '');
+                    $prefix = trim((string) (($p = strpos($rm, ' [')) !== false ? substr($rm, 0, $p) : $rm));
+                    $tpl = $tk;
+                    break;
+                }
             }
         }
     } catch (Throwable $e) {}
